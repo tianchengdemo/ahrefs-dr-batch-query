@@ -5,6 +5,80 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.0] - 2026-03-30
+
+### 新增
+
+- **Telegram Bot 集成** - 通过 Telegram 聊天界面查询域名 DR 和 AR
+- **命令处理** - 支持 /start, /query, /batch, /history, /help 命令
+- **单域名查询** - `/query domain.com` 快速查询单个域名
+- **批量查询** - `/batch domain1.com domain2.com` 批量查询（最多 10 个）
+- **查询历史** - `/history` 查看最近的查询记录
+- **Markdown 格式化** - 美观的查询结果展示
+- **实时进度提示** - 查询过程中显示处理状态
+- **自动域名清理** - 自动移除 http://, www. 等前缀
+- **错误处理** - 友好的错误提示和异常处理
+
+### Bot 命令
+
+| 命令 | 说明 |
+|------|------|
+| `/start` | 显示欢迎消息和快速入门 |
+| `/query <域名>` | 查询单个域名 |
+| `/batch <域名列表>` | 批量查询（空格分隔） |
+| `/history` | 查看查询历史 |
+| `/help` | 显示帮助信息 |
+
+### 技术实现
+
+- python-telegram-bot 库
+- 异步命令处理
+- API 客户端封装
+- 轮询任务状态
+- Markdown 消息格式化
+
+### 文档
+
+- 新增 `BOT.md` - 完整的 Bot 使用文档
+- 包含配置指南、命令说明、部署方案
+- 故障排查和安全建议
+
+### 依赖
+
+- 新增 `python-telegram-bot` - Telegram Bot 框架
+
+### 使用示例
+
+```
+用户: /query example.com
+
+Bot: 🔍 正在查询 example.com...
+
+Bot: ✅ example.com
+
+⭐ DR: 93.0
+📊 AR: 120
+```
+
+### 配置
+
+在 `bot/config.py` 或环境变量中设置：
+
+```python
+TELEGRAM_BOT_TOKEN = "你的Bot Token"
+API_BASE_URL = "http://localhost:8000"
+```
+
+### 启动方式
+
+```bash
+# 启动 API 服务
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+# 启动 Bot
+python bot/main.py
+```
+
 ## [2.1.0] - 2026-03-30
 
 ### 新增

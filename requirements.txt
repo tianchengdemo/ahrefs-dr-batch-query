@@ -6,3 +6,6 @@ websocket-client
 fastapi
 uvicorn[standard]
 pydantic
+
+# Telegram Bot
+python-telegram-bot

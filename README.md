@@ -346,12 +346,91 @@ curl http://localhost:8000/api/result/c1794d5c-89ad-4e3b-9538-d75b3b789f54
 ## 依赖说明
 
 ```txt
-requests          # HTTP 请求库
-pysocks           # SOCKS5 代理支持
-websocket-client  # WebSocket 客户端（CDP 连接）
+requests              # HTTP 请求库
+pysocks               # SOCKS5 代理支持
+websocket-client      # WebSocket 客户端（CDP 连接）
+fastapi               # Web 框架（API 服务）
+uvicorn[standard]     # ASGI 服务器（API 服务）
+pydantic              # 数据验证（API 服务）
+python-telegram-bot   # Telegram Bot 框架
 ```
 
+## 使用方式
+
+### 1. 命令行模式（CLI）
+
+```bash
+# 查询单个域名
+python main.py --domains "example.com"
+
+# 批量查询
+python main.py --domains "example.com,google.com,github.com"
+
+# 从文件批量查询
+python main.py --file domains.txt
+```
+
+### 2. API 服务模式
+
+```bash
+# 启动 API 服务
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+# 访问 API 文档
+http://localhost:8000/docs
+
+# 查询域名
+curl -X POST http://localhost:8000/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","country":"us"}'
+```
+
+**详细文档**: [API.md](API.md)
+
+### 3. Telegram Bot 模式
+
+```bash
+# 配置 Bot Token
+export TELEGRAM_BOT_TOKEN="你的Bot Token"
+
+# 启动 API 服务（必需）
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+# 启动 Bot
+python bot/main.py
+```
+
+**详细文档**: [BOT.md](BOT.md)
+
+**Bot 命令**:
+- `/start` - 开始使用
+- `/query example.com` - 查询单个域名
+- `/batch example.com google.com` - 批量查询
+- `/history` - 查看历史
+- `/help` - 帮助信息
+
 ## 更新日志
+
+### v2.2.0 (2026-03-30)
+
+**新增：Telegram Bot 集成**
+
+- ✅ Telegram Bot 聊天界面查询
+- ✅ 命令处理：/start, /query, /batch, /history, /help
+- ✅ Markdown 格式化输出
+- ✅ 实时进度提示
+- ✅ 自动域名格式清理
+- ✅ 查询历史记录
+
+### v2.1.0 (2026-03-30)
+
+**新增：FastAPI REST API 服务**
+
+- ✅ RESTful API 服务
+- ✅ 异步任务处理
+- ✅ Swagger UI 文档
+- ✅ 任务状态追踪
+- ✅ 批量查询 API
 
 ### v2.0.0 (2026-03-29)
 
