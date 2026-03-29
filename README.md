@@ -9,19 +9,24 @@
 - ✅ **HubStudio 集成** - 自动管理浏览器启动、Cookie 获取、代理配置
 - ✅ **批量查询** - 支持查询多个域名的 DR 和 Ahrefs Rank
 - ✅ **多种输出格式** - 支持表格、JSON、CSV 导出
+- ✅ **REST API 服务** - FastAPI 异步 API 服务，支持任务队列和状态追踪
 
 ## 项目结构
 
 ```
 ahrefs/
-├── config.py           # 全局配置（HubStudio API、代理、请求头）
-├── hubstudio.py        # HubStudio 指纹浏览器 API 客户端
-├── ahrefs.py           # Ahrefs 数据查询客户端
-├── main.py             # CLI 命令行入口
-├── requirements.txt    # Python 依赖
-├── README.md           # 本文件
-├── ARCHITECTURE.md     # 技术架构文档
-└── .venv/              # Python 虚拟环境
+├── api/
+│   ├── __init__.py         # API 模块初始化
+│   └── main.py             # FastAPI 应用入口
+├── config.py               # 全局配置（HubStudio API、代理、请求头）
+├── hubstudio.py            # HubStudio 指纹浏览器 API 客户端
+├── ahrefs.py               # Ahrefs 数据查询客户端
+├── main.py                 # CLI 命令行入口
+├── requirements.txt        # Python 依赖
+├── README.md               # 本文件
+├── API.md                  # API 服务文档
+├── ARCHITECTURE.md         # 技术架构文档
+└── .venv/                  # Python 虚拟环境
 ```
 
 ## 前置条件
@@ -79,6 +84,65 @@ python main.py --domains "example.com" --overview
 # 手动指定代理（覆盖 HubStudio 环境代理）
 python main.py --domains "example.com" --proxy "socks5://127.0.0.1:1080"
 ```
+
+## API 服务模式
+
+### 启动 API 服务
+
+```bash
+# 开发模式（自动重载）
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 生产模式
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+# 或直接运行
+cd api
+python main.py
+```
+
+### API 端点
+
+- `GET /` - API 基本信息
+- `GET /health` - 健康检查
+- `GET /docs` - Swagger 交互式文档
+- `POST /api/query` - 查询单个域名
+- `POST /api/batch` - 批量查询
+- `GET /api/result/{task_id}` - 获取任务结果
+- `GET /api/tasks` - 列出所有任务
+
+### API 使用示例
+
+```bash
+# 查询单个域名
+curl -X POST http://localhost:8000/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","country":"us"}'
+
+# 响应
+{
+  "task_id": "c1794d5c-89ad-4e3b-9538-d75b3b789f54",
+  "status": "pending",
+  "message": "任务已创建，正在处理中"
+}
+
+# 获取结果
+curl http://localhost:8000/api/result/c1794d5c-89ad-4e3b-9538-d75b3b789f54
+
+# 响应
+{
+  "status": "completed",
+  "results": [
+    {
+      "domain": "example.com",
+      "domain_rating": 93.0,
+      "ahrefs_rank": 120
+    }
+  ]
+}
+```
+
+**详细文档**: 查看 [API.md](API.md) 获取完整的 API 使用指南。
 
 ## 工作原理
 

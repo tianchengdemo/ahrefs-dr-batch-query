@@ -5,6 +5,82 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.1.0] - 2026-03-30
+
+### 新增
+
+- **FastAPI REST API 服务** - 将工具封装为 RESTful API 服务
+- **异步任务处理** - 使用 BackgroundTasks 实现异步查询
+- **任务状态追踪** - 支持查询任务状态和结果
+- **批量查询 API** - 支持通过 API 批量查询多个域名
+- **交互式 API 文档** - 自动生成 Swagger UI 文档
+- **健康检查端点** - 提供服务健康状态检查
+- **CORS 支持** - 支持跨域请求
+
+### API 端点
+
+- `GET /` - API 基本信息
+- `GET /health` - 健康检查
+- `POST /api/query` - 查询单个域名
+- `POST /api/batch` - 批量查询
+- `GET /api/result/{task_id}` - 获取任务结果
+- `GET /api/tasks` - 列出所有任务
+
+### 技术实现
+
+- FastAPI 框架
+- Pydantic 数据验证
+- Uvicorn ASGI 服务器
+- 后台任务队列
+- 内存任务存储
+
+### 文档
+
+- 新增 `API.md` - 完整的 API 使用文档
+- 包含使用示例（Python、JavaScript、cURL）
+- 部署指南和性能指标
+
+### 依赖
+
+- 新增 `fastapi` - Web 框架
+- 新增 `uvicorn[standard]` - ASGI 服务器
+- 新增 `pydantic` - 数据验证
+
+### 测试结果
+
+```bash
+# 测试查询
+curl -X POST http://localhost:8000/api/query \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","country":"us"}'
+
+# 响应
+{
+  "task_id": "c1794d5c-89ad-4e3b-9538-d75b3b789f54",
+  "status": "pending",
+  "message": "任务已创建，正在处理中"
+}
+
+# 查询结果
+{
+  "status": "completed",
+  "results": [
+    {
+      "domain": "example.com",
+      "domain_rating": 93.0,
+      "ahrefs_rank": 120
+    }
+  ]
+}
+```
+
+### 下一步计划
+
+- Redis 任务存储
+- JWT 认证
+- Celery 异步任务队列
+- WebSocket 实时通知
+
 ## [2.0.0] - 2026-03-30
 
 ### 新增
