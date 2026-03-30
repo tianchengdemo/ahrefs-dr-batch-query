@@ -140,4 +140,5 @@ cd D:\DEV\ahrefs
 - [快速入门](docs/QUICKSTART.md)
 - [API](docs/API.md)
 - [Bot](docs/BOT.md)
+- [Docker](docs/DOCKER.md)
 - [Architecture](docs/ARCHITECTURE.md)

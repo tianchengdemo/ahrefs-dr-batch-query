@@ -13,6 +13,28 @@ Swagger:
 http://127.0.0.1:8000/docs
 ```
 
+## Docker
+
+Build and run:
+
+```powershell
+docker compose up -d --build
+```
+
+Important notes:
+
+- `config.py` is mounted into the container
+- `.omc` is mounted for SQLite cache persistence
+- `host.docker.internal` is available inside the container
+- when running in Docker, set `HUBSTUDIO_API_BASE` and `HUBSTUDIO_CDP_HOST` for the host machine
+
+Typical Docker config:
+
+```python
+HUBSTUDIO_API_BASE = "http://host.docker.internal:6873"
+HUBSTUDIO_CDP_HOST = "host.docker.internal"
+```
+
 ## Authentication
 
 Protected endpoints require:

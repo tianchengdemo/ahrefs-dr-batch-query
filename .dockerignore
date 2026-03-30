@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+__pycache__
+.idea
+.claude
+.omc
+config.py
+cookies.txt
+*.pyc
+*.pyo
+*.pyd

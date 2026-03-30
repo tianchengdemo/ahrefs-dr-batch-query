@@ -1,0 +1,15 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: ahrefs-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.py:/app/config.py:ro
+      - ./.omc:/app/.omc
+      - ./cookies.txt:/app/cookies.txt:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

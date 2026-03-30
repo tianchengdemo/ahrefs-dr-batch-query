@@ -9,6 +9,8 @@ Copy this file to config.py and fill in your real values.
 # ============================================================
 
 HUBSTUDIO_API_BASE = "http://127.0.0.1:6873"
+# When running in Docker, this is usually "host.docker.internal".
+HUBSTUDIO_CDP_HOST = "127.0.0.1"
 APP_ID = "your-app-id"
 APP_SECRET = "your-app-secret"
 CONTAINER_CODE = "your-container-code"

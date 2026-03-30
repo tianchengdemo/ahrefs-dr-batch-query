@@ -27,6 +27,7 @@ from config import (
     COOKIE_CACHE_TTL_MINUTES,
     DEFAULT_COUNTRY,
     HUBSTUDIO_API_BASE,
+    HUBSTUDIO_CDP_HOST,
     RESULT_CACHE_DB_PATH,
     RESULT_CACHE_ENABLED,
     RESULT_CACHE_TTL_DAYS,
@@ -171,6 +172,7 @@ def _load_cookie_from_hubstudio() -> tuple[str, Optional[str]]:
         api_base=HUBSTUDIO_API_BASE,
         app_id=APP_ID,
         app_secret=APP_SECRET,
+        cdp_host=HUBSTUDIO_CDP_HOST,
     )
 
     browser_info = hub.start_browser(
