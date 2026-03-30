@@ -137,7 +137,7 @@ cd D:\DEV\ahrefs
 
 ## 相关文档
 
-- [API.md](API.md)
-- [BOT.md](BOT.md)
-- [FILES.md](FILES.md)
-- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [快速入门](docs/QUICKSTART.md)
+- [API](docs/API.md)
+- [Bot](docs/BOT.md)
+- [Architecture](docs/ARCHITECTURE.md)
