@@ -30,7 +30,7 @@ services:
       - --appendonly
       - "no"
       - --maxmemory
-      - 128mb
+      - 2048mb
       - --maxmemory-policy
       - allkeys-lru
     restart: unless-stopped
