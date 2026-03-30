@@ -30,6 +30,7 @@ env/
 config.py
 cookies.txt
 .env
+docs/API.LOCAL.md
 
 # 输出文件
 *.csv
