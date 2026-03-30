@@ -42,7 +42,7 @@ from result_cache import DomainResultCache
 app = FastAPI(
     title="Ahrefs DR Batch Query API",
     description="Query Ahrefs DR and AR with HubStudio-backed auth and local caching.",
-    version="2.2.0",
+    version="2.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -345,7 +345,7 @@ def process_query_task(task_id: str, domains: List[str], country: str) -> None:
 async def root():
     return {
         "name": "Ahrefs DR Batch Query API",
-        "version": "2.2.0",
+        "version": "2.4.0",
         "docs": "/docs",
         "health": "/health",
     }
