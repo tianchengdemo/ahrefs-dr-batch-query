@@ -9,6 +9,8 @@ Best-supported mode:
 - API runs in a container
 - HubStudio runs on the host machine
 - the container connects to HubStudio through `host.docker.internal`
+- Redis runs in a separate container as a hot cache
+- SQLite remains the persistent local database
 
 ## Required Config
 
@@ -56,6 +58,31 @@ This keeps:
 - private config outside the image
 - SQLite cache persistent across container restarts
 - cookie fallback available when needed
+
+## Redis Hot Cache
+
+Compose also starts a Redis container:
+
+- `ahrefs-redis`
+
+Cache strategy:
+
+- Redis stores hot keys only
+- SQLite remains the durable local store
+- SQLite hits can repopulate Redis
+
+Capacity control:
+
+- Redis persistence is disabled
+- memory limit is `128mb`
+- eviction policy is `allkeys-lru`
+
+Compose sets:
+
+```text
+--maxmemory 128mb
+--maxmemory-policy allkeys-lru
+```
 
 ## Limitations
 

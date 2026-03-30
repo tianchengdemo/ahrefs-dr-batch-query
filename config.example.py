@@ -95,6 +95,17 @@ RESULT_CACHE_TTL_DAYS = 30
 
 
 # ============================================================
+# Redis hot cache settings
+# ============================================================
+
+# Optional Redis front cache. SQLite remains the persistent store.
+REDIS_ENABLED = False
+REDIS_URL = "redis://127.0.0.1:6379/0"
+REDIS_CACHE_TTL_SECONDS = 21600
+REDIS_KEY_PREFIX = "ahrefs:domain-cache:"
+
+
+# ============================================================
 # API auth settings
 # ============================================================
 

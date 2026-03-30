@@ -106,7 +106,8 @@ Returns task status and results.
 ## Cache
 
 - Cookie cache is in memory
-- Result cache is SQLite
+- Result cache is persisted in SQLite
+- Redis can be enabled as a hot cache in front of SQLite
 - Cache hit responses can return `completed + results` directly
 - `source` is one of `cache`, `live`, `mixed`
 
@@ -119,6 +120,9 @@ COOKIE_CACHE_TTL_MINUTES = 30
 RESULT_CACHE_ENABLED = True
 RESULT_CACHE_DB_PATH = ".omc/result_cache.sqlite3"
 RESULT_CACHE_TTL_DAYS = 30
+REDIS_ENABLED = False
+REDIS_URL = "redis://127.0.0.1:6379/0"
+REDIS_CACHE_TTL_SECONDS = 21600
 API_AUTH_ENABLED = True
 API_KEYS = ["your-api-key"]
 ```

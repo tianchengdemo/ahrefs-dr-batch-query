@@ -7,10 +7,12 @@ import re
 import threading
 import time
 import uuid
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
 import uvicorn
+import config as app_config
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
@@ -53,11 +55,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+REDIS_ENABLED = os.getenv(
+    "REDIS_ENABLED",
+    str(getattr(app_config, "REDIS_ENABLED", False)),
+).strip().lower() in {"1", "true", "yes", "on"}
+REDIS_URL = os.getenv(
+    "REDIS_URL",
+    getattr(app_config, "REDIS_URL", ""),
+).strip()
+REDIS_CACHE_TTL_SECONDS = int(
+    os.getenv(
+        "REDIS_CACHE_TTL_SECONDS",
+        str(getattr(app_config, "REDIS_CACHE_TTL_SECONDS", 21600)),
+    )
+)
+REDIS_KEY_PREFIX = os.getenv(
+    "REDIS_KEY_PREFIX",
+    getattr(app_config, "REDIS_KEY_PREFIX", "ahrefs:domain-cache:"),
+).strip()
+
 tasks_storage: Dict[str, dict] = {}
 result_cache = DomainResultCache(
     db_path=RESULT_CACHE_DB_PATH,
     ttl_days=RESULT_CACHE_TTL_DAYS,
     enabled=RESULT_CACHE_ENABLED,
+    redis_enabled=REDIS_ENABLED,
+    redis_url=REDIS_URL,
+    redis_ttl_seconds=REDIS_CACHE_TTL_SECONDS,
+    redis_key_prefix=REDIS_KEY_PREFIX,
 )
 
 _cookie_lock = threading.Lock()
@@ -325,6 +350,8 @@ async def health_check():
         "result_cache_enabled": RESULT_CACHE_ENABLED,
         "result_cache_ttl_days": RESULT_CACHE_TTL_DAYS,
         "cookie_cache_ttl_minutes": COOKIE_CACHE_TTL_MINUTES,
+        "redis_enabled": REDIS_ENABLED and bool(REDIS_URL),
+        "redis_cache_ttl_seconds": REDIS_CACHE_TTL_SECONDS,
     }
 
 
