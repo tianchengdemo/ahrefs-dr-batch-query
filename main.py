@@ -118,9 +118,9 @@ def setup_client(args):
 
     # 优先从 HubStudio 获取 Cookie 和代理
     if CONTAINER_CODE and APP_ID and APP_SECRET:
+        hub = HubStudioClient()
+        browser_started = False
         try:
-            hub = HubStudioClient()
-
             print("[HubStudio] 正在重启浏览器以启用 CDP...")
             # 先关闭浏览器
             try:
@@ -137,6 +137,7 @@ def setup_client(args):
                 enable_cdp=True,
                 open_url="https://app.ahrefs.com"
             )
+            browser_started = True
             debugging_port = browser_info.get("debuggingPort")
 
             if debugging_port:
@@ -175,6 +176,13 @@ def setup_client(args):
         except Exception as e:
             print(f"[HubStudio] 获取失败: {e}")
             print("[HubStudio] 将使用 cookies.txt 中的配置")
+        finally:
+            if browser_started:
+                try:
+                    hub.stop_browser(CONTAINER_CODE)
+                    print("[HubStudio] Cookie 获取完成，已关闭浏览器")
+                except Exception:
+                    pass
 
     # 回退到 cookies.txt
     if not cookie:

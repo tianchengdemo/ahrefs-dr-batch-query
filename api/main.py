@@ -199,26 +199,35 @@ def _load_cookie_from_hubstudio() -> tuple[str, Optional[str]]:
         app_secret=APP_SECRET,
         cdp_host=HUBSTUDIO_CDP_HOST,
     )
+    browser_started = False
 
-    browser_info = hub.start_browser(
-        CONTAINER_CODE,
-        enable_cdp=True,
-        open_url="https://app.ahrefs.com",
-    )
-    debugging_port = browser_info.get("debuggingPort")
+    try:
+        browser_info = hub.start_browser(
+            CONTAINER_CODE,
+            enable_cdp=True,
+            open_url="https://app.ahrefs.com",
+        )
+        browser_started = True
+        debugging_port = browser_info.get("debuggingPort")
 
-    if debugging_port:
-        time.sleep(5)
-        cookies = hub.get_cookies_via_cdp(debugging_port, "ahrefs.com")
-        if cookies:
-            cookie = hub.build_cookie_header(cookies)
-        else:
-            cookies = hub.export_cookies(CONTAINER_CODE)
+        if debugging_port:
+            time.sleep(5)
+            cookies = hub.get_cookies_via_cdp(debugging_port, "ahrefs.com")
             if cookies:
                 cookie = hub.build_cookie_header(cookies)
+            else:
+                cookies = hub.export_cookies(CONTAINER_CODE)
+                if cookies:
+                    cookie = hub.build_cookie_header(cookies)
 
-    if not proxy_url:
-        proxy_url = hub.get_proxy_for_env(CONTAINER_CODE)
+        if not proxy_url:
+            proxy_url = hub.get_proxy_for_env(CONTAINER_CODE)
+    finally:
+        if browser_started:
+            try:
+                hub.stop_browser(CONTAINER_CODE)
+            except Exception:
+                pass
 
     return cookie or "", proxy_url
 
