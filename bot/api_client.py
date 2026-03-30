@@ -8,12 +8,15 @@ from typing import Dict, List, Optional
 
 import requests
 
-from .config import API_BASE_URL, POLL_INTERVAL, QUERY_TIMEOUT
+from .config import API_BASE_URL, API_KEY, POLL_INTERVAL, QUERY_TIMEOUT
 
 
 class APIClient:
     def __init__(self, base_url: str = API_BASE_URL):
         self.base_url = base_url.rstrip("/")
+        self.headers = {}
+        if API_KEY:
+            self.headers["X-API-Key"] = API_KEY
 
     @staticmethod
     def _attach_source(result: Dict, source: Optional[str]) -> Dict:
@@ -34,6 +37,7 @@ class APIClient:
             response = requests.post(
                 f"{self.base_url}/api/query",
                 json={"domain": domain, "country": country},
+                headers=self.headers,
                 timeout=10,
             )
 
@@ -82,6 +86,7 @@ class APIClient:
             response = requests.post(
                 f"{self.base_url}/api/batch",
                 json={"domains": domains, "country": country},
+                headers=self.headers,
                 timeout=10,
             )
 
@@ -131,6 +136,7 @@ class APIClient:
         try:
             response = requests.get(
                 f"{self.base_url}/api/result/{task_id}",
+                headers=self.headers,
                 timeout=5,
             )
 
@@ -144,7 +150,7 @@ class APIClient:
 
     def list_tasks(self) -> Optional[Dict]:
         try:
-            response = requests.get(f"{self.base_url}/api/tasks", timeout=5)
+            response = requests.get(f"{self.base_url}/api/tasks", headers=self.headers, timeout=5)
 
             if response.status_code == 200:
                 return response.json()

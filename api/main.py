@@ -11,13 +11,16 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from ahrefs import AhrefsClient
 from config import (
     AHREFS_COOKIE,
+    API_AUTH_ENABLED,
+    API_KEYS,
     APP_ID,
     APP_SECRET,
     CONTAINER_CODE,
@@ -62,6 +65,8 @@ _cookie_cache = {
     "proxy_url": SOCKS5_PROXY,
     "expires_at": 0.0,
 }
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+configured_api_keys = {key.strip() for key in API_KEYS if key and key.strip()}
 
 
 class QueryRequest(BaseModel):
@@ -103,6 +108,19 @@ class TaskResult(BaseModel):
     source: Optional[str] = None
     cached_domains: int = 0
     live_domains: int = 0
+
+
+def verify_api_key(x_api_key: Optional[str] = Depends(api_key_header)) -> None:
+    if not API_AUTH_ENABLED:
+        return
+
+    if not configured_api_keys:
+        raise HTTPException(status_code=500, detail="API auth is enabled but API_KEYS is empty")
+
+    if x_api_key and x_api_key in configured_api_keys:
+        return
+
+    raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 def normalize_domain(domain: str) -> str:
@@ -308,7 +326,7 @@ async def health_check():
     }
 
 
-@app.post("/api/query", response_model=TaskResponse, tags=["Query"])
+@app.post("/api/query", response_model=TaskResponse, tags=["Query"], dependencies=[Depends(verify_api_key)])
 async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks):
     domain = normalize_domain(request.domain)
     country = normalize_country(request.country)
@@ -360,7 +378,7 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
     )
 
 
-@app.post("/api/batch", response_model=TaskResponse, tags=["Query"])
+@app.post("/api/batch", response_model=TaskResponse, tags=["Query"], dependencies=[Depends(verify_api_key)])
 async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTasks):
     domains = []
     for domain in request.domains:
@@ -429,7 +447,7 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
     )
 
 
-@app.get("/api/result/{task_id}", response_model=TaskResult, tags=["Query"])
+@app.get("/api/result/{task_id}", response_model=TaskResult, tags=["Query"], dependencies=[Depends(verify_api_key)])
 async def get_result(task_id: str):
     if task_id not in tasks_storage:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -448,7 +466,7 @@ async def get_result(task_id: str):
     )
 
 
-@app.get("/api/tasks", tags=["Query"])
+@app.get("/api/tasks", tags=["Query"], dependencies=[Depends(verify_api_key)])
 async def list_tasks():
     return {
         "total": len(tasks_storage),

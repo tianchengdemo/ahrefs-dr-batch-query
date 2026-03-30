@@ -90,3 +90,17 @@ RESULT_CACHE_DB_PATH = ".omc/result_cache.sqlite3"
 # Keep successful query results for this many days.
 # Set to 0 to disable result caching.
 RESULT_CACHE_TTL_DAYS = 30
+
+
+# ============================================================
+# API auth settings
+# ============================================================
+
+# Require X-API-Key on protected API endpoints.
+API_AUTH_ENABLED = True
+
+# Multiple keys are supported.
+API_KEYS = [
+    "replace-with-a-long-random-key",
+    "optional-second-key",
+]
