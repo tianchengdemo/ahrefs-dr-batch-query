@@ -29,6 +29,7 @@ env/
 # 配置文件（包含敏感信息）
 config.py
 cookies.txt
+.env
 
 # 输出文件
 *.csv
