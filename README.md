@@ -4,35 +4,56 @@
 
 - CLI 查询
 - FastAPI 接口
-- Telegram Bot
-- Cookie 复用缓存
-- 域名结果 SQLite 缓存
+- Telegram Bot 客户端
+- Cookie 内存缓存
+- SQLite 持久化结果缓存
+- Redis 热点缓存
+- Docker + Caddy 域名反向代理
 
-## 当前行为
+## 当前状态
 
-- API 不再每次查询都重启浏览器取 Cookie。
-- Cookie 默认在内存中复用 `30` 分钟。
-- 成功查询的域名结果默认缓存 `30` 天。
-- 结果缓存按 `domain + country` 存储。
-- Bot 正确启动方式是 `python -m bot.main`，不是 `python bot/main.py`。
+当前实现与运行方式：
 
-## 目录
+- API 是核心执行层，负责鉴权、缓存、查询和任务轮询
+- Bot 只是客户端，不再承载缓存和业务逻辑
+- Cookie 默认在内存中复用 `30` 分钟
+- 成功查询结果默认缓存 `30` 天
+- Redis 作为热点缓存，SQLite 作为持久化缓存
+- 批量查询按 `domain + country` 分域名命中缓存
+- 获取完 Cookie 后会自动关闭 HubStudio 浏览器
+- Docker 部署已支持 Caddy 自动 HTTPS
+
+## 生产地址
+
+- API: `https://dr.lookav.net`
+- Swagger: `https://dr.lookav.net/docs`
+- 健康检查: `https://dr.lookav.net/health`
+
+## 项目结构
 
 ```text
 ahrefs/
-├── api/
-│   └── main.py
-├── bot/
-│   ├── api_client.py
-│   ├── config.py
-│   ├── handlers.py
-│   └── main.py
-├── ahrefs.py
-├── config.example.py
-├── hubstudio.py
-├── main.py
-├── requirements.txt
-└── result_cache.py
+├─ api/
+│  └─ main.py
+├─ bot/
+│  ├─ api_client.py
+│  ├─ config.py
+│  ├─ handlers.py
+│  └─ main.py
+├─ deploy/
+│  └─ Caddyfile
+├─ docs/
+│  ├─ API.md
+│  ├─ ARCHITECTURE.md
+│  ├─ BOT.md
+│  ├─ DOCKER.md
+│  └─ QUICKSTART.md
+├─ ahrefs.py
+├─ config.example.py
+├─ docker-compose.yml
+├─ hubstudio.py
+├─ main.py
+└─ result_cache.py
 ```
 
 ## 依赖
@@ -40,6 +61,7 @@ ahrefs/
 - Python 3.10+
 - HubStudio Local API
 - 已登录 Ahrefs 的 HubStudio 环境
+- Docker Desktop 或 Docker Engine（如需容器部署）
 
 安装依赖：
 
@@ -48,51 +70,58 @@ cd D:\DEV\ahrefs
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## 配置
+## 基础配置
 
-复制 `config.example.py` 为 `config.py`，然后填写：
+复制 `config.example.py` 为 `config.py`，填写：
 
 ```python
 HUBSTUDIO_API_BASE = "http://127.0.0.1:6873"
+HUBSTUDIO_CDP_HOST = "127.0.0.1"
 APP_ID = "your-app-id"
 APP_SECRET = "your-app-secret"
 CONTAINER_CODE = "your-container-code"
 ```
 
-缓存相关配置：
+缓存与鉴权相关配置：
 
 ```python
 COOKIE_CACHE_TTL_MINUTES = 30
 RESULT_CACHE_ENABLED = True
 RESULT_CACHE_DB_PATH = ".omc/result_cache.sqlite3"
 RESULT_CACHE_TTL_DAYS = 30
+REDIS_ENABLED = False
+REDIS_URL = "redis://127.0.0.1:6379/0"
+REDIS_CACHE_TTL_SECONDS = 21600
+API_AUTH_ENABLED = True
+API_KEYS = ["replace-with-a-long-random-key"]
 ```
 
-说明：
-
-- `COOKIE_CACHE_TTL_MINUTES`
-  控制 Cookie 在内存中复用多久。
-- `RESULT_CACHE_TTL_DAYS`
-  控制域名查询结果保留多久。
-- `RESULT_CACHE_DB_PATH`
-  是 SQLite 缓存库路径。
-
-## 启动 API
+## 本地启动 API
 
 ```powershell
 cd D:\DEV\ahrefs
 .\.venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-健康检查：
+检查：
 
 ```powershell
-curl http://127.0.0.1:8000/health
+curl.exe http://127.0.0.1:8000/health
 ```
 
-`/health` 会返回当前缓存开关和 TTL。
+## Docker 启动
 
-## 启动 Bot
+```powershell
+docker compose up -d --build
+```
+
+如果要用 Caddy 绑定域名，在根目录创建 `.env`：
+
+```dotenv
+CADDY_DOMAIN=dr.lookav.net
+```
+
+## Bot 启动
 
 先启动 API，再启动 Bot：
 
@@ -105,40 +134,31 @@ cd D:\DEV\ahrefs
 
 ### Cookie 缓存
 
-- API 首次需要实时查询时，会从 HubStudio 获取 Cookie。
-- 之后在 TTL 内复用内存中的 Cookie。
-- 如果 Ahrefs 返回 `403`，会自动失效并重新刷新 Cookie。
+- API 在需要实时查询时，才会从 HubStudio 获取 Cookie
+- Cookie 在 TTL 内复用，不会每次查询都重启浏览器
+- 当 Ahrefs 返回 `403` 时，会自动失效并重新获取 Cookie
+- 获取完 Cookie 后会自动关闭 HubStudio 浏览器
 
 ### 结果缓存
 
-- 单域名和批量查询都会先查 SQLite。
-- 批量查询只会实时请求未命中的域名。
-- 例如第一次只查过 `example.com`，之后执行：
+- 单域名和批量查询都会先查缓存
+- 批量查询只会实时请求未命中的域名
+- Redis 命中优先返回
+- Redis 未命中时会回落到 SQLite
+- SQLite 命中后会重新回填 Redis
+
+示例：
 
 ```text
 /batch example.com google.com github.com
 ```
 
-则只会实时请求 `google.com` 和 `github.com`。
+如果只有 `example.com` 已缓存，那么这次只会实时请求 `google.com` 和 `github.com`。
 
-## CLI
+## 文档
 
-单域名：
-
-```powershell
-.\.venv\Scripts\python.exe main.py --domains "example.com"
-```
-
-多域名：
-
-```powershell
-.\.venv\Scripts\python.exe main.py --domains "example.com,google.com,github.com"
-```
-
-## 相关文档
-
-- [快速入门](docs/QUICKSTART.md)
-- [API](docs/API.md)
-- [Bot](docs/BOT.md)
-- [Docker](docs/DOCKER.md)
-- [Architecture](docs/ARCHITECTURE.md)
+- [快速开始](docs/QUICKSTART.md)
+- [API 文档](docs/API.md)
+- [Bot 文档](docs/BOT.md)
+- [Docker 部署](docs/DOCKER.md)
+- [架构说明](docs/ARCHITECTURE.md)

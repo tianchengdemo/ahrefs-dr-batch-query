@@ -1,24 +1,39 @@
 # Telegram Bot
 
-## Start Order
+## 定位
 
-Start API first:
+Bot 只是客户端：
+
+- 不负责缓存
+- 不负责鉴权逻辑
+- 不直接查询 Ahrefs
+- 所有业务都交给 API
+
+当前行为：
+
+- 如果 API 直接返回 `completed + results`，Bot 不再轮询
+- 如果 API 返回 `pending`，Bot 会轮询 `/api/result/{task_id}`
+- Bot 请求头会自动带上 `X-API-Key`
+
+## 启动顺序
+
+先启动 API：
 
 ```powershell
 cd D:\DEV\ahrefs
 .\.venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-Then start Bot:
+再启动 Bot：
 
 ```powershell
 cd D:\DEV\ahrefs
 .\.venv\Scripts\python.exe -m bot.main
 ```
 
-## Bot Config
+## Bot 配置
 
-Edit `bot/config.py`:
+编辑 `bot/config.py`：
 
 ```python
 TELEGRAM_BOT_TOKEN = "your-bot-token"
@@ -30,9 +45,21 @@ QUERY_TIMEOUT = 60
 MAX_BATCH_DOMAINS = 20
 ```
 
-`API_KEY` must match one of the keys in the API server's `API_KEYS`.
+如果 Bot 走线上 API，可改成：
 
-## Commands
+```python
+API_BASE_URL = "https://dr.lookav.net"
+API_KEY = "your-api-key"
+```
+
+说明：
+
+- `API_KEY` 必须和 API 端 `API_KEYS` 中的某一个一致
+- `POLL_INTERVAL` 是轮询任务结果的间隔秒数
+- `QUERY_TIMEOUT` 是单次查询最长等待时间
+- `MAX_BATCH_DOMAINS` 是 Bot 一次批量允许的最大域名数
+
+## 支持命令
 
 - `/start`
 - `/help`
@@ -40,9 +67,25 @@ MAX_BATCH_DOMAINS = 20
 - `/batch <domain1> <domain2> ...`
 - `/history`
 
-## Client Behavior
+## 示例
 
-- Bot is only a client
-- API is responsible for auth, cache, and query execution
-- If API returns `completed + results` directly, Bot will not poll `/api/result`
-- If API returns `pending`, Bot will poll until the task completes or times out
+单域名：
+
+```text
+/query example.com
+/query example.com us
+```
+
+批量：
+
+```text
+/batch example.com google.com github.com
+```
+
+## 与 API 的关系
+
+- API 负责鉴权
+- API 负责 Cookie 缓存
+- API 负责结果缓存
+- API 负责任务调度和状态查询
+- Bot 只负责把 Telegram 命令转成 API 请求

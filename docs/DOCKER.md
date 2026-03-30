@@ -1,91 +1,105 @@
-# Docker Deployment
+# Docker 部署
 
-## What Works
+## 当前 Docker 结构
 
-The Docker stack now includes:
+当前 Compose 包含三个服务：
 
-- `ahrefs-api` for the FastAPI service
-- `ahrefs-redis` for hot-cache storage
-- `ahrefs-caddy` for domain binding and automatic HTTPS
+- `ahrefs-api`：FastAPI 服务
+- `ahrefs-redis`：热点缓存
+- `ahrefs-caddy`：域名反代和自动 HTTPS
 
-Best-supported mode:
+推荐模式：
 
-- API runs in Docker
-- Caddy terminates HTTPS and reverse-proxies to the API container
-- HubStudio runs on the host machine
-- the API container connects to HubStudio through `host.docker.internal`
-- Redis stores hot keys only
-- SQLite remains the persistent local database
+- API 跑在 Docker 中
+- HubStudio 跑在宿主机
+- API 容器通过 `host.docker.internal` 访问 HubStudio
+- Redis 只做热点缓存
+- SQLite 作为持久化缓存
+- Caddy 负责域名和证书
 
-## Required Config
+## 必要配置
 
-In `config.py`:
+### `config.py`
+
+如果 Docker 内要访问宿主机 HubStudio：
 
 ```python
 HUBSTUDIO_API_BASE = "http://host.docker.internal:6873"
 HUBSTUDIO_CDP_HOST = "host.docker.internal"
 ```
 
-If you do not want HubStudio integration in Docker, you can instead rely on:
+如果不走 HubStudio，也可以只依赖：
 
 ```python
 AHREFS_COOKIE = "..."
 ```
 
-Copy `.env.example` to `.env`, then set your real domain:
+### `.env`
+
+复制 `.env.example` 为 `.env`，填写：
 
 ```dotenv
-CADDY_DOMAIN=api.example.com
+CADDY_DOMAIN=dr.lookav.net
 ```
 
-`CADDY_DOMAIN` must already resolve to your server public IP.
-
-## Start
+## 启动
 
 ```powershell
 docker compose up -d --build
 ```
 
-Stop:
+停止：
 
 ```powershell
 docker compose down
 ```
 
-## Domain Binding
+查看状态：
 
-Compose exposes:
-
-- `80/tcp` for HTTP challenge and redirect
-- `443/tcp` for HTTPS
-- `127.0.0.1:8000` for local host debugging only
-
-Caddy reads `deploy/Caddyfile` and reverse-proxies:
-
-- `https://$CADDY_DOMAIN` -> `api:8000`
-
-Examples:
-
-```text
-https://api.example.com/health
-https://api.example.com/api/query
+```powershell
+docker compose ps
 ```
 
-If you use an external firewall or cloud security group, allow inbound:
+## 域名访问
 
-- `80`
-- `443`
+Compose 暴露：
 
-## Files
+- `80/tcp`
+- `443/tcp`
+- `127.0.0.1:8000` 仅供本机调试
 
-- `Dockerfile.api`
-- `docker-compose.yml`
-- `deploy/Caddyfile`
-- `.dockerignore`
+Caddy 会把：
 
-## Volumes
+```text
+https://$CADDY_DOMAIN
+```
 
-Compose mounts:
+反代到：
+
+```text
+api:8000
+```
+
+例如：
+
+```text
+https://dr.lookav.net/health
+https://dr.lookav.net/docs
+https://dr.lookav.net/api/query
+```
+
+## Windows 服务器注意事项
+
+如果部署在 Windows 公网服务器：
+
+- 确保 Docker Desktop 正常运行
+- 确保 Windows 防火墙放行 `80` 和 `443`
+- 如果用了 Cloudflare，首次申请证书时要保证源站可回源
+- Caddy 成功签证后即可直接通过域名访问 API
+
+## 挂载
+
+Compose 当前挂载：
 
 - `./config.py:/app/config.py:ro`
 - `./.omc:/app/.omc`
@@ -93,45 +107,41 @@ Compose mounts:
 - `caddy_data:/data`
 - `caddy_config:/config`
 
-This keeps:
+作用：
 
-- private config outside the image
-- SQLite cache persistent across container restarts
-- cookie fallback available when needed
-- Caddy certificates persistent across container restarts
+- 私有配置不进镜像
+- SQLite 跨容器重启持久化
+- Cookie 文件可作为兜底
+- Caddy 证书会持久化保存
 
-## Redis Hot Cache
+## Redis 热点缓存
 
-Compose also starts a Redis container:
+当前缓存策略：
 
-- `ahrefs-redis`
+- Redis 只缓存热点 key
+- SQLite 仍是持久化数据源
+- SQLite 命中后会重新回填 Redis
 
-Cache strategy:
+当前限制：
 
-- Redis stores hot keys only
-- SQLite remains the durable local store
-- SQLite hits can repopulate Redis
+- Redis 持久化关闭
+- 最大内存 `2048mb`
+- 淘汰策略 `allkeys-lru`
 
-Capacity control:
-
-- Redis persistence is disabled
-- memory limit is `2048mb`
-- eviction policy is `allkeys-lru`
-
-Compose sets:
+Compose 中对应参数：
 
 ```text
 --maxmemory 2048mb
 --maxmemory-policy allkeys-lru
 ```
 
-## Limitations
+## 限制
 
-The current Docker setup is for the API service.
+当前 Docker 只容器化了 API 相关服务。
 
-It does not containerize:
+没有容器化的部分：
 
-- HubStudio itself
-- the fingerprint browser
+- HubStudio 本体
+- 指纹浏览器
 
-Those still run on the host.
+它们仍然运行在宿主机。
