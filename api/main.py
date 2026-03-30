@@ -78,6 +78,10 @@ class TaskResponse(BaseModel):
     task_id: str = Field(..., description="Task ID")
     status: str = Field(..., description="Task status")
     message: str = Field(..., description="Task message")
+    results: Optional[List["QueryResult"]] = Field(None, description="Completed results when immediately available")
+    source: Optional[str] = Field(None, description="Result source: cache, live, or mixed")
+    cached_domains: int = Field(0, description="How many domains were served from cache")
+    live_domains: int = Field(0, description="How many domains required live querying")
 
 
 class QueryResult(BaseModel):
@@ -96,6 +100,9 @@ class TaskResult(BaseModel):
     completed_at: Optional[str] = None
     results: Optional[List[QueryResult]] = None
     error: Optional[str] = None
+    source: Optional[str] = None
+    cached_domains: int = 0
+    live_domains: int = 0
 
 
 def normalize_domain(domain: str) -> str:
@@ -122,6 +129,14 @@ def should_refresh_cookie(results: List[dict]) -> bool:
         if "403" in error or "forbidden" in error:
             return True
     return False
+
+
+def detect_result_source(cached_domains: int, live_domains: int) -> str:
+    if live_domains == 0:
+        return "cache"
+    if cached_domains == 0:
+        return "live"
+    return "mixed"
 
 
 def invalidate_cookie_cache() -> None:
@@ -213,7 +228,7 @@ def fetch_fresh_results(domains: List[str], country: str, force_refresh: bool = 
     return results
 
 
-def query_domains_with_cache(domains: List[str], country: str) -> List[dict]:
+def query_domains_with_cache(domains: List[str], country: str) -> dict:
     normalized_country = normalize_country(country)
     normalized_domains = []
     for domain in domains:
@@ -226,11 +241,13 @@ def query_domains_with_cache(domains: List[str], country: str) -> List[dict]:
     ordered_results: List[Optional[dict]] = [None] * len(normalized_domains)
     missing_domains: List[str] = []
     missing_indexes: List[int] = []
+    cached_domains = 0
 
     for index, domain in enumerate(normalized_domains):
         cached_result = result_cache.get(domain, normalized_country)
         if cached_result:
             ordered_results[index] = cached_result
+            cached_domains += 1
             continue
 
         missing_domains.append(domain)
@@ -245,16 +262,25 @@ def query_domains_with_cache(domains: List[str], country: str) -> List[dict]:
             if should_cache_result(result):
                 result_cache.set(normalized_result_domain, normalized_country, result)
 
-    return [result for result in ordered_results if result is not None]
+    live_domains = len(missing_domains)
+    return {
+        "results": [result for result in ordered_results if result is not None],
+        "cached_domains": cached_domains,
+        "live_domains": live_domains,
+        "source": detect_result_source(cached_domains, live_domains),
+    }
 
 
 def process_query_task(task_id: str, domains: List[str], country: str) -> None:
     try:
         tasks_storage[task_id]["status"] = "processing"
-        results = query_domains_with_cache(domains, country)
+        query_output = query_domains_with_cache(domains, country)
         tasks_storage[task_id]["status"] = "completed"
         tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
-        tasks_storage[task_id]["results"] = results
+        tasks_storage[task_id]["results"] = query_output["results"]
+        tasks_storage[task_id]["source"] = query_output["source"]
+        tasks_storage[task_id]["cached_domains"] = query_output["cached_domains"]
+        tasks_storage[task_id]["live_domains"] = query_output["live_domains"]
     except Exception as exc:
         tasks_storage[task_id]["status"] = "failed"
         tasks_storage[task_id]["error"] = str(exc)
@@ -294,6 +320,9 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
         "created_at": datetime.now().isoformat(),
         "domains": [domain],
         "country": country,
+        "source": None,
+        "cached_domains": 0,
+        "live_domains": 1,
     }
 
     cached_result = result_cache.get(domain, country)
@@ -301,10 +330,17 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
         tasks_storage[task_id]["status"] = "completed"
         tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
         tasks_storage[task_id]["results"] = [cached_result]
+        tasks_storage[task_id]["source"] = "cache"
+        tasks_storage[task_id]["cached_domains"] = 1
+        tasks_storage[task_id]["live_domains"] = 0
         return TaskResponse(
             task_id=task_id,
             status="completed",
             message="Result returned from cache",
+            results=[cached_result],
+            source="cache",
+            cached_domains=1,
+            live_domains=0,
         )
 
     background_tasks.add_task(
@@ -318,6 +354,9 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
         task_id=task_id,
         status="pending",
         message="Task created and processing",
+        source="live",
+        cached_domains=0,
+        live_domains=1,
     )
 
 
@@ -337,6 +376,9 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
         "created_at": datetime.now().isoformat(),
         "domains": domains,
         "country": country,
+        "source": None,
+        "cached_domains": 0,
+        "live_domains": len(domains),
     }
 
     cached_results: List[Optional[dict]] = []
@@ -351,11 +393,24 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
         tasks_storage[task_id]["status"] = "completed"
         tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
         tasks_storage[task_id]["results"] = [result for result in cached_results if result]
+        tasks_storage[task_id]["source"] = "cache"
+        tasks_storage[task_id]["cached_domains"] = len(domains)
+        tasks_storage[task_id]["live_domains"] = 0
         return TaskResponse(
             task_id=task_id,
             status="completed",
             message=f"All {len(domains)} results returned from cache",
+            results=[result for result in cached_results if result],
+            source="cache",
+            cached_domains=len(domains),
+            live_domains=0,
         )
+
+    cached_domains = sum(1 for result in cached_results if result)
+    live_domains = len(domains) - cached_domains
+    tasks_storage[task_id]["cached_domains"] = cached_domains
+    tasks_storage[task_id]["live_domains"] = live_domains
+    tasks_storage[task_id]["source"] = detect_result_source(cached_domains, live_domains)
 
     background_tasks.add_task(
         process_query_task,
@@ -368,6 +423,9 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
         task_id=task_id,
         status="pending",
         message=f"Task created and processing {len(domains)} domains",
+        source=detect_result_source(cached_domains, live_domains),
+        cached_domains=cached_domains,
+        live_domains=live_domains,
     )
 
 
@@ -384,6 +442,9 @@ async def get_result(task_id: str):
         completed_at=task.get("completed_at"),
         results=task.get("results"),
         error=task.get("error"),
+        source=task.get("source"),
+        cached_domains=task.get("cached_domains", 0),
+        live_domains=task.get("live_domains", 0),
     )
 
 
