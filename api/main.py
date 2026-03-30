@@ -1,33 +1,46 @@
 # -*- coding: utf-8 -*-
 """
-Ahrefs DR 批量查询工具 - FastAPI 服务
+Ahrefs DR query API.
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+import re
+import threading
+import time
+import uuid
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import uvicorn
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional
-import uvicorn
-from datetime import datetime
-import uuid
 
 from ahrefs import AhrefsClient
-from hubstudio import HubStudioClient
 from config import (
-    HUBSTUDIO_API_BASE, APP_ID, APP_SECRET, CONTAINER_CODE,
-    SOCKS5_PROXY, AHREFS_COOKIE
+    AHREFS_COOKIE,
+    APP_ID,
+    APP_SECRET,
+    CONTAINER_CODE,
+    COOKIE_CACHE_TTL_MINUTES,
+    DEFAULT_COUNTRY,
+    HUBSTUDIO_API_BASE,
+    RESULT_CACHE_DB_PATH,
+    RESULT_CACHE_ENABLED,
+    RESULT_CACHE_TTL_DAYS,
+    SOCKS5_PROXY,
 )
+from hubstudio import HubStudioClient
+from result_cache import DomainResultCache
 
-# 创建 FastAPI 应用
+
 app = FastAPI(
     title="Ahrefs DR Batch Query API",
-    description="通过 HubStudio 和 CDP 协议自动获取 Cookie，批量查询域名 DR 和 AR",
-    version="2.1.0",
+    description="Query Ahrefs DR and AR with HubStudio-backed auth and local caching.",
+    version="2.2.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
 )
 
-# CORS 配置
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,35 +49,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 任务存储（生产环境应使用 Redis）
-tasks_storage = {}
+tasks_storage: Dict[str, dict] = {}
+result_cache = DomainResultCache(
+    db_path=RESULT_CACHE_DB_PATH,
+    ttl_days=RESULT_CACHE_TTL_DAYS,
+    enabled=RESULT_CACHE_ENABLED,
+)
 
+_cookie_lock = threading.Lock()
+_cookie_cache = {
+    "cookie": None,
+    "proxy_url": SOCKS5_PROXY,
+    "expires_at": 0.0,
+}
 
-# ============================================================
-# Pydantic 模型
-# ============================================================
 
 class QueryRequest(BaseModel):
-    """单个域名查询请求"""
-    domain: str = Field(..., description="域名", example="example.com")
-    country: Optional[str] = Field("us", description="国家代码", example="us")
+    domain: str = Field(..., description="Domain", example="example.com")
+    country: Optional[str] = Field(DEFAULT_COUNTRY, description="Country code", example="us")
 
 
 class BatchQueryRequest(BaseModel):
-    """批量查询请求"""
-    domains: List[str] = Field(..., description="域名列表", example=["example.com", "google.com"])
-    country: Optional[str] = Field("us", description="国家代码", example="us")
+    domains: List[str] = Field(..., description="Domain list", example=["example.com", "google.com"])
+    country: Optional[str] = Field(DEFAULT_COUNTRY, description="Country code", example="us")
 
 
 class TaskResponse(BaseModel):
-    """任务响应"""
-    task_id: str = Field(..., description="任务 ID")
-    status: str = Field(..., description="任务状态: pending, processing, completed, failed")
-    message: str = Field(..., description="状态消息")
+    task_id: str = Field(..., description="Task ID")
+    status: str = Field(..., description="Task status")
+    message: str = Field(..., description="Task message")
 
 
 class QueryResult(BaseModel):
-    """查询结果"""
     domain: str
     domain_rating: Optional[float]
     ahrefs_rank: Optional[int]
@@ -74,7 +90,6 @@ class QueryResult(BaseModel):
 
 
 class TaskResult(BaseModel):
-    """任务结果"""
     task_id: str
     status: str
     created_at: str
@@ -83,205 +98,297 @@ class TaskResult(BaseModel):
     error: Optional[str] = None
 
 
-# ============================================================
-# 辅助函数
-# ============================================================
+def normalize_domain(domain: str) -> str:
+    value = domain.strip().lower()
+    value = re.sub(r"^https?://", "", value)
+    value = value.rstrip("/")
+    value = re.sub(r"^www\.", "", value)
+    return value
 
-def get_ahrefs_client():
-    """获取 Ahrefs 客户端"""
+
+def normalize_country(country: Optional[str]) -> str:
+    return (country or DEFAULT_COUNTRY).strip().lower()
+
+
+def should_cache_result(result: dict) -> bool:
+    if result.get("error"):
+        return False
+    return result.get("domain_rating") is not None or result.get("ahrefs_rank") is not None
+
+
+def should_refresh_cookie(results: List[dict]) -> bool:
+    for result in results:
+        error = str(result.get("error", "")).lower()
+        if "403" in error or "forbidden" in error:
+            return True
+    return False
+
+
+def invalidate_cookie_cache() -> None:
+    with _cookie_lock:
+        _cookie_cache["cookie"] = None
+        _cookie_cache["expires_at"] = 0.0
+        _cookie_cache["proxy_url"] = SOCKS5_PROXY
+
+
+def _load_cookie_from_hubstudio() -> tuple[str, Optional[str]]:
     cookie = None
     proxy_url = SOCKS5_PROXY
+    hub = HubStudioClient(
+        api_base=HUBSTUDIO_API_BASE,
+        app_id=APP_ID,
+        app_secret=APP_SECRET,
+    )
 
-    # 尝试从 HubStudio 获取 Cookie
+    browser_info = hub.start_browser(
+        CONTAINER_CODE,
+        enable_cdp=True,
+        open_url="https://app.ahrefs.com",
+    )
+    debugging_port = browser_info.get("debuggingPort")
+
+    if debugging_port:
+        time.sleep(5)
+        cookies = hub.get_cookies_via_cdp(debugging_port, "ahrefs.com")
+        if cookies:
+            cookie = hub.build_cookie_header(cookies)
+        else:
+            cookies = hub.export_cookies(CONTAINER_CODE)
+            if cookies:
+                cookie = hub.build_cookie_header(cookies)
+
+    if not proxy_url:
+        proxy_url = hub.get_proxy_for_env(CONTAINER_CODE)
+
+    return cookie or "", proxy_url
+
+
+def get_ahrefs_client(force_refresh: bool = False) -> AhrefsClient:
+    now_ts = time.time()
+
+    with _cookie_lock:
+        if (
+            not force_refresh
+            and _cookie_cache["cookie"]
+            and now_ts < _cookie_cache["expires_at"]
+        ):
+            return AhrefsClient(
+                cookie_header=_cookie_cache["cookie"],
+                proxy_url=_cookie_cache["proxy_url"],
+            )
+
+    cookie = ""
+    proxy_url = SOCKS5_PROXY
+
     if CONTAINER_CODE and APP_ID and APP_SECRET:
         try:
-            hub = HubStudioClient()
+            cookie, proxy_url = _load_cookie_from_hubstudio()
+        except Exception as exc:
+            print(f"[API] Failed to refresh cookie from HubStudio: {exc}")
 
-            # 启动浏览器并通过 CDP 获取 Cookie
-            browser_info = hub.start_browser(
-                CONTAINER_CODE,
-                enable_cdp=True,
-                open_url="https://app.ahrefs.com"
-            )
-            debugging_port = browser_info.get("debuggingPort")
-
-            if debugging_port:
-                import time
-                time.sleep(5)  # 等待页面加载
-
-                cookies = hub.get_cookies_via_cdp(debugging_port, "ahrefs.com")
-                if cookies:
-                    cookie = hub.build_cookie_header(cookies)
-                else:
-                    cookies = hub.export_cookies(CONTAINER_CODE)
-                    if cookies:
-                        cookie = hub.build_cookie_header(cookies)
-
-            if not proxy_url:
-                proxy_url = hub.get_proxy_for_env(CONTAINER_CODE)
-
-        except Exception as e:
-            print(f"[API] HubStudio 获取失败: {e}")
-
-    # 回退到配置文件
     if not cookie:
         cookie = AHREFS_COOKIE
 
     if not cookie:
-        raise HTTPException(status_code=500, detail="未配置 Cookie")
+        raise HTTPException(status_code=500, detail="Cookie is not configured")
+
+    expires_at = now_ts + max(COOKIE_CACHE_TTL_MINUTES, 0) * 60
+    with _cookie_lock:
+        _cookie_cache["cookie"] = cookie
+        _cookie_cache["proxy_url"] = proxy_url
+        _cookie_cache["expires_at"] = expires_at
 
     return AhrefsClient(cookie_header=cookie, proxy_url=proxy_url)
 
 
-def process_query_task(task_id: str, domains: List[str], country: str):
-    """处理查询任务（后台任务）"""
-    try:
-        tasks_storage[task_id]["status"] = "processing"
+def fetch_fresh_results(domains: List[str], country: str, force_refresh: bool = False) -> List[dict]:
+    client = get_ahrefs_client(force_refresh=force_refresh)
+    results = client.batch_get_domain_rating(domains, country=country)
 
-        # 获取客户端
-        client = get_ahrefs_client()
-
-        # 批量查询
+    if should_refresh_cookie(results) and not force_refresh:
+        invalidate_cookie_cache()
+        client = get_ahrefs_client(force_refresh=True)
         results = client.batch_get_domain_rating(domains, country=country)
 
-        # 更新任务状态
+    return results
+
+
+def query_domains_with_cache(domains: List[str], country: str) -> List[dict]:
+    normalized_country = normalize_country(country)
+    normalized_domains = []
+    for domain in domains:
+        normalized_domain = normalize_domain(domain)
+        if normalized_domain:
+            normalized_domains.append(normalized_domain)
+
+    result_cache.prune_expired()
+
+    ordered_results: List[Optional[dict]] = [None] * len(normalized_domains)
+    missing_domains: List[str] = []
+    missing_indexes: List[int] = []
+
+    for index, domain in enumerate(normalized_domains):
+        cached_result = result_cache.get(domain, normalized_country)
+        if cached_result:
+            ordered_results[index] = cached_result
+            continue
+
+        missing_domains.append(domain)
+        missing_indexes.append(index)
+
+    if missing_domains:
+        fresh_results = fetch_fresh_results(missing_domains, normalized_country)
+        for index, requested_domain, result in zip(missing_indexes, missing_domains, fresh_results):
+            normalized_result_domain = normalize_domain(result.get("domain", requested_domain))
+            result["domain"] = normalized_result_domain
+            ordered_results[index] = result
+            if should_cache_result(result):
+                result_cache.set(normalized_result_domain, normalized_country, result)
+
+    return [result for result in ordered_results if result is not None]
+
+
+def process_query_task(task_id: str, domains: List[str], country: str) -> None:
+    try:
+        tasks_storage[task_id]["status"] = "processing"
+        results = query_domains_with_cache(domains, country)
         tasks_storage[task_id]["status"] = "completed"
         tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
         tasks_storage[task_id]["results"] = results
-
-    except Exception as e:
+    except Exception as exc:
         tasks_storage[task_id]["status"] = "failed"
-        tasks_storage[task_id]["error"] = str(e)
+        tasks_storage[task_id]["error"] = str(exc)
         tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
 
 
-# ============================================================
-# API 端点
-# ============================================================
-
 @app.get("/", tags=["Root"])
 async def root():
-    """API 根路径"""
     return {
         "name": "Ahrefs DR Batch Query API",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "docs": "/docs",
-        "health": "/health"
+        "health": "/health",
     }
 
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    """健康检查"""
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "result_cache_enabled": RESULT_CACHE_ENABLED,
+        "result_cache_ttl_days": RESULT_CACHE_TTL_DAYS,
+        "cookie_cache_ttl_minutes": COOKIE_CACHE_TTL_MINUTES,
     }
 
 
 @app.post("/api/query", response_model=TaskResponse, tags=["Query"])
 async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks):
-    """
-    查询单个域名的 DR 和 AR
-
-    - **domain**: 域名（如 example.com）
-    - **country**: 国家代码（默认 us）
-
-    返回任务 ID，使用 /api/result/{task_id} 获取结果
-    """
+    domain = normalize_domain(request.domain)
+    country = normalize_country(request.country)
     task_id = str(uuid.uuid4())
 
-    # 创建任务
     tasks_storage[task_id] = {
         "task_id": task_id,
         "status": "pending",
         "created_at": datetime.now().isoformat(),
-        "domains": [request.domain],
-        "country": request.country
+        "domains": [domain],
+        "country": country,
     }
 
-    # 添加后台任务
+    cached_result = result_cache.get(domain, country)
+    if cached_result:
+        tasks_storage[task_id]["status"] = "completed"
+        tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
+        tasks_storage[task_id]["results"] = [cached_result]
+        return TaskResponse(
+            task_id=task_id,
+            status="completed",
+            message="Result returned from cache",
+        )
+
     background_tasks.add_task(
         process_query_task,
         task_id,
-        [request.domain],
-        request.country
+        [domain],
+        country,
     )
 
     return TaskResponse(
         task_id=task_id,
         status="pending",
-        message="任务已创建，正在处理中"
+        message="Task created and processing",
     )
 
 
 @app.post("/api/batch", response_model=TaskResponse, tags=["Query"])
 async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTasks):
-    """
-    批量查询多个域名的 DR 和 AR
-
-    - **domains**: 域名列表
-    - **country**: 国家代码（默认 us）
-
-    返回任务 ID，使用 /api/result/{task_id} 获取结果
-    """
+    domains = []
+    for domain in request.domains:
+        normalized_domain = normalize_domain(domain)
+        if normalized_domain:
+            domains.append(normalized_domain)
+    country = normalize_country(request.country)
     task_id = str(uuid.uuid4())
 
-    # 创建任务
     tasks_storage[task_id] = {
         "task_id": task_id,
         "status": "pending",
         "created_at": datetime.now().isoformat(),
-        "domains": request.domains,
-        "country": request.country
+        "domains": domains,
+        "country": country,
     }
 
-    # 添加后台任务
+    cached_results: List[Optional[dict]] = []
+    all_cached = True
+    for domain in domains:
+        cached_result = result_cache.get(domain, country)
+        cached_results.append(cached_result)
+        if not cached_result:
+            all_cached = False
+
+    if all_cached and domains:
+        tasks_storage[task_id]["status"] = "completed"
+        tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
+        tasks_storage[task_id]["results"] = [result for result in cached_results if result]
+        return TaskResponse(
+            task_id=task_id,
+            status="completed",
+            message=f"All {len(domains)} results returned from cache",
+        )
+
     background_tasks.add_task(
         process_query_task,
         task_id,
-        request.domains,
-        request.country
+        domains,
+        country,
     )
 
     return TaskResponse(
         task_id=task_id,
         status="pending",
-        message=f"任务已创建，正在处理 {len(request.domains)} 个域名"
+        message=f"Task created and processing {len(domains)} domains",
     )
 
 
 @app.get("/api/result/{task_id}", response_model=TaskResult, tags=["Query"])
 async def get_result(task_id: str):
-    """
-    获取任务结果
-
-    - **task_id**: 任务 ID
-
-    返回任务状态和查询结果
-    """
     if task_id not in tasks_storage:
-        raise HTTPException(status_code=404, detail="任务不存在")
+        raise HTTPException(status_code=404, detail="Task not found")
 
     task = tasks_storage[task_id]
-
     return TaskResult(
         task_id=task["task_id"],
         status=task["status"],
         created_at=task["created_at"],
         completed_at=task.get("completed_at"),
         results=task.get("results"),
-        error=task.get("error")
+        error=task.get("error"),
     )
 
 
 @app.get("/api/tasks", tags=["Query"])
 async def list_tasks():
-    """
-    列出所有任务
-
-    返回任务列表
-    """
     return {
         "total": len(tasks_storage),
         "tasks": [
@@ -289,16 +396,12 @@ async def list_tasks():
                 "task_id": task["task_id"],
                 "status": task["status"],
                 "created_at": task["created_at"],
-                "domains_count": len(task["domains"])
+                "domains_count": len(task["domains"]),
             }
             for task in tasks_storage.values()
-        ]
+        ],
     }
 
-
-# ============================================================
-# 启动服务
-# ============================================================
 
 if __name__ == "__main__":
     uvicorn.run(
@@ -306,5 +409,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="info",
     )

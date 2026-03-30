@@ -1,59 +1,48 @@
 # -*- coding: utf-8 -*-
 """
-Ahrefs DR 批量查询工具 - 配置文件示例
-复制此文件为 config.py 并填写你的配置
+Example configuration for the Ahrefs query service.
+Copy this file to config.py and fill in your real values.
 """
 
 # ============================================================
-# HubStudio 指纹浏览器配置
+# HubStudio settings
 # ============================================================
 
-# HubStudio Local API 地址
-# 从 HubStudio 客户端 → 设置 → Local API 获取
 HUBSTUDIO_API_BASE = "http://127.0.0.1:6873"
+APP_ID = "your-app-id"
+APP_SECRET = "your-app-secret"
+CONTAINER_CODE = "your-container-code"
 
-# APP ID - 从 HubStudio → 设置 → Local API 获取
-APP_ID = "你的APP_ID"
-
-# APP Secret - 从 HubStudio → 设置 → Local API 获取
-APP_SECRET = "你的APP_SECRET"
-
-# 环境 ID - 已登录 Ahrefs 的 HubStudio 环境 ID
-# 在 HubStudio 环境列表中查看 containerCode
-CONTAINER_CODE = "你的环境ID"
 
 # ============================================================
-# Ahrefs Cookie 配置（可选）
-# 优先使用 CDP 自动获取，此配置仅作为回退方案
+# Ahrefs cookie fallback
 # ============================================================
 
 def _load_cookie():
-    """从 cookies.txt 加载手动配置的 Cookie（回退方案）"""
     try:
-        with open("cookies.txt", "r", encoding="utf-8") as f:
-            return f.read().strip()
+        with open("cookies.txt", "r", encoding="utf-8") as file:
+            return file.read().strip()
     except FileNotFoundError:
         return ""
 
+
 AHREFS_COOKIE = _load_cookie()
 
+
 # ============================================================
-# SOCKS5 代理配置（可选）
-# 优先从 HubStudio 环境自动获取，此配置用于手动覆盖
+# Proxy settings
 # ============================================================
 
-# 留空则自动从 HubStudio 环境获取代理配置
-# 格式: "socks5://user:pass@host:port" 或 "socks5://host:port"
+# Leave empty to use the proxy configured in HubStudio.
 SOCKS5_PROXY = ""
 
+
 # ============================================================
-# Ahrefs API 配置
+# Ahrefs request settings
 # ============================================================
 
-# Ahrefs 网站基地址
 AHREFS_BASE_URL = "https://app.ahrefs.com"
 
-# 默认请求头（模拟浏览器）
 DEFAULT_HEADERS = {
     "accept": "*/*",
     "accept-language": "vi-VN,vi;q=0.9",
@@ -73,54 +62,31 @@ DEFAULT_HEADERS = {
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
 }
 
+
 # ============================================================
-# 查询配置
+# Query settings
 # ============================================================
 
-# 默认国家代码
 DEFAULT_COUNTRY = "us"
-
-# 批量查询时每个请求之间的延迟（秒）
 REQUEST_DELAY = 2
-
-# 请求超时（秒）
 REQUEST_TIMEOUT = 30
-
-# 失败重试次数
 MAX_RETRIES = 3
 
+
 # ============================================================
-# 配置说明
+# Cache settings
 # ============================================================
 
-"""
-必填配置：
-1. HUBSTUDIO_API_BASE - HubStudio API 地址
-2. APP_ID - HubStudio APP ID
-3. APP_SECRET - HubStudio APP Secret
-4. CONTAINER_CODE - 已登录 Ahrefs 的环境 ID
+# Reuse the HubStudio cookie in memory to avoid restarting the browser
+# on every query. Set to 0 to disable cookie caching.
+COOKIE_CACHE_TTL_MINUTES = 30
 
-可选配置：
-1. SOCKS5_PROXY - 手动指定代理（留空则自动获取）
-2. AHREFS_COOKIE - 手动配置 Cookie（留空则自动获取）
-3. DEFAULT_COUNTRY - 默认查询国家
-4. REQUEST_DELAY - 请求间隔
-5. REQUEST_TIMEOUT - 请求超时
-6. MAX_RETRIES - 重试次数
+# Persist successful domain query results in SQLite.
+RESULT_CACHE_ENABLED = True
 
-获取 HubStudio 配置的步骤：
-1. 打开 HubStudio 客户端
-2. 点击右上角 设置 图标
-3. 选择 Local API
-4. 复制 API 接口地址、APP ID、APP Secret
-5. 在环境列表中找到已登录 Ahrefs 的环境
-6. 复制该环境的 containerCode
+# Cache database file path. Relative paths are resolved from the project root.
+RESULT_CACHE_DB_PATH = ".omc/result_cache.sqlite3"
 
-注意事项：
-- 确保 HubStudio 客户端正在运行
-- 确保 Local API 状态为"正常"
-- 确保环境已登录 Ahrefs 账号
-- 确保环境配置了可用的 SOCKS5 代理
-- 程序会自动通过 CDP 获取所有 Cookie（包括 HttpOnly）
-- 无需手动配置 BSSESSID 等会话 Cookie
-"""
+# Keep successful query results for this many days.
+# Set to 0 to disable result caching.
+RESULT_CACHE_TTL_DAYS = 30

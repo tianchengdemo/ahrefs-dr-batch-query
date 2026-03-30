@@ -1,474 +1,143 @@
-# Ahrefs DR 批量查询工具
+# Ahrefs Query Service
 
-通过 HubStudio 指纹浏览器自动获取已登录 Ahrefs 账号的 Cookie（包括 HttpOnly），结合 SOCKS5 代理，批量查询域名的 Domain Rating (DR) 及其他 SEO 指标。
+基于 HubStudio 和 Ahrefs 会话的域名查询服务，提供：
 
-## 核心特性
+- CLI 查询
+- FastAPI 接口
+- Telegram Bot
+- Cookie 复用缓存
+- 域名结果 SQLite 缓存
 
-- ✅ **完全自动化** - 自动通过 CDP 协议获取所有 Cookie（包括 HttpOnly）
-- ✅ **零手动操作** - 无需手动复制 Cookie 或配置会话信息
-- ✅ **HubStudio 集成** - 自动管理浏览器启动、Cookie 获取、代理配置
-- ✅ **批量查询** - 支持查询多个域名的 DR 和 Ahrefs Rank
-- ✅ **多种输出格式** - 支持表格、JSON、CSV 导出
-- ✅ **REST API 服务** - FastAPI 异步 API 服务，支持任务队列和状态追踪
+## 当前行为
 
-## 项目结构
+- API 不再每次查询都重启浏览器取 Cookie。
+- Cookie 默认在内存中复用 `30` 分钟。
+- 成功查询的域名结果默认缓存 `30` 天。
+- 结果缓存按 `domain + country` 存储。
+- Bot 正确启动方式是 `python -m bot.main`，不是 `python bot/main.py`。
 
-```
+## 目录
+
+```text
 ahrefs/
 ├── api/
-│   ├── __init__.py         # API 模块初始化
-│   └── main.py             # FastAPI 应用入口
-├── config.py               # 全局配置（HubStudio API、代理、请求头）
-├── hubstudio.py            # HubStudio 指纹浏览器 API 客户端
-├── ahrefs.py               # Ahrefs 数据查询客户端
-├── main.py                 # CLI 命令行入口
-├── requirements.txt        # Python 依赖
-├── README.md               # 本文件
-├── API.md                  # API 服务文档
-├── ARCHITECTURE.md         # 技术架构文档
-└── .venv/                  # Python 虚拟环境
+│   └── main.py
+├── bot/
+│   ├── api_client.py
+│   ├── config.py
+│   ├── handlers.py
+│   └── main.py
+├── ahrefs.py
+├── config.example.py
+├── hubstudio.py
+├── main.py
+├── requirements.txt
+└── result_cache.py
 ```
 
-## 前置条件
+## 依赖
 
-1. **HubStudio 指纹浏览器** 已安装并运行，且 Local API 处于"正常"状态
-2. 至少一个 HubStudio 环境已 **登录 Ahrefs 账号**
-3. 该环境已配置 **SOCKS5 代理**（工具会自动读取环境代理配置）
-4. Python 3.10+
+- Python 3.10+
+- HubStudio Local API
+- 已登录 Ahrefs 的 HubStudio 环境
 
-## 快速开始
+安装依赖：
 
-### 1. 安装依赖
-
-```bash
+```powershell
 cd D:\DEV\ahrefs
-.venv\Scripts\activate
-pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 2. 配置
+## 配置
 
-编辑 `config.py`，填入以下信息（从 HubStudio 客户端 → 设置 → Local API 页面获取）：
+复制 `config.example.py` 为 `config.py`，然后填写：
 
 ```python
-HUBSTUDIO_API_BASE = "http://127.0.0.1:6873"   # API 接口地址
-APP_ID = "你的APP_ID"                            # APP ID
-APP_SECRET = "你的APP_SECRET"                    # APP Secret
-CONTAINER_CODE = "你的环境ID"                     # 已登录Ahrefs的环境ID
+HUBSTUDIO_API_BASE = "http://127.0.0.1:6873"
+APP_ID = "your-app-id"
+APP_SECRET = "your-app-secret"
+CONTAINER_CODE = "your-container-code"
 ```
 
-### 3. 使用
+缓存相关配置：
 
-```bash
-# 查询单个域名
-python main.py --domains "example.com"
-
-# 查询多个域名（逗号分隔）
-python main.py --domains "example.com,google.com,github.com"
-
-# 从文件批量查询（每行一个域名）
-python main.py --file domains.txt
-
-# 指定国家代码
-python main.py --domains "example.com" --country br
-
-# 导出 CSV
-python main.py --domains "example.com,google.com" --output results.csv
-
-# JSON 格式输出
-python main.py --domains "example.com" --json
-
-# 获取完整概览数据（DR + UR + 反链 + 流量等）
-python main.py --domains "example.com" --overview
-
-# 手动指定代理（覆盖 HubStudio 环境代理）
-python main.py --domains "example.com" --proxy "socks5://127.0.0.1:1080"
+```python
+COOKIE_CACHE_TTL_MINUTES = 30
+RESULT_CACHE_ENABLED = True
+RESULT_CACHE_DB_PATH = ".omc/result_cache.sqlite3"
+RESULT_CACHE_TTL_DAYS = 30
 ```
 
-## API 服务模式
+说明：
 
-### 启动 API 服务
+- `COOKIE_CACHE_TTL_MINUTES`
+  控制 Cookie 在内存中复用多久。
+- `RESULT_CACHE_TTL_DAYS`
+  控制域名查询结果保留多久。
+- `RESULT_CACHE_DB_PATH`
+  是 SQLite 缓存库路径。
 
-```bash
-# 开发模式（自动重载）
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+## 启动 API
 
-# 生产模式
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
-
-# 或直接运行
-cd api
-python main.py
+```powershell
+cd D:\DEV\ahrefs
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-### API 端点
+健康检查：
 
-- `GET /` - API 基本信息
-- `GET /health` - 健康检查
-- `GET /docs` - Swagger 交互式文档
-- `POST /api/query` - 查询单个域名
-- `POST /api/batch` - 批量查询
-- `GET /api/result/{task_id}` - 获取任务结果
-- `GET /api/tasks` - 列出所有任务
-
-### API 使用示例
-
-```bash
-# 查询单个域名
-curl -X POST http://localhost:8000/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"domain":"example.com","country":"us"}'
-
-# 响应
-{
-  "task_id": "c1794d5c-89ad-4e3b-9538-d75b3b789f54",
-  "status": "pending",
-  "message": "任务已创建，正在处理中"
-}
-
-# 获取结果
-curl http://localhost:8000/api/result/c1794d5c-89ad-4e3b-9538-d75b3b789f54
-
-# 响应
-{
-  "status": "completed",
-  "results": [
-    {
-      "domain": "example.com",
-      "domain_rating": 93.0,
-      "ahrefs_rank": 120
-    }
-  ]
-}
+```powershell
+curl http://127.0.0.1:8000/health
 ```
 
-**详细文档**: 查看 [API.md](API.md) 获取完整的 API 使用指南。
+`/health` 会返回当前缓存开关和 TTL。
 
-## 工作原理
+## 启动 Bot
 
-### 自动化 Cookie 获取流程
+先启动 API，再启动 Bot：
 
-1. **关闭浏览器** - 自动关闭 HubStudio 环境（如果正在运行）
-2. **启动浏览器** - 使用 CDP 参数 `--remote-allow-origins=*` 重新启动
-3. **打开页面** - 自动访问 `https://app.ahrefs.com` 并等待加载
-4. **CDP 连接** - 通过 Chrome DevTools Protocol 连接浏览器
-5. **获取 Cookie** - 调用 `Network.getCookies` 获取所有 Cookie（包括 HttpOnly）
-6. **查询数据** - 使用获取的 Cookie 查询域名 DR 数据
-
-### Cookie 获取策略
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  优先级 1: CDP 协议获取（推荐）                           │
-│  - 包含所有 Cookie（含 HttpOnly 如 BSSESSID）            │
-│  - 自动启动浏览器并打开 ahrefs.com                       │
-│  - 等待页面加载后通过 WebSocket 获取                     │
-└─────────────────────────────────────────────────────────┘
-                        ↓ 失败
-┌─────────────────────────────────────────────────────────┐
-│  优先级 2: HubStudio API 导出                            │
-│  - 只能获取非 HttpOnly Cookie                            │
-│  - 缺少关键会话 Cookie（BSSESSID）                       │
-│  - 会导致 401 认证失败                                   │
-└─────────────────────────────────────────────────────────┘
-                        ↓ 失败
-┌─────────────────────────────────────────────────────────┐
-│  优先级 3: 手动配置（回退方案）                          │
-│  - 从 cookies.txt 读取手动配置的 Cookie                  │
-│  - 需要用户手动从浏览器复制                              │
-└─────────────────────────────────────────────────────────┘
+```powershell
+cd D:\DEV\ahrefs
+.\.venv\Scripts\python.exe -m bot.main
 ```
 
-## CLI 参数说明
+## 缓存说明
 
-| 参数 | 短名 | 说明 | 默认值 |
-|------|------|------|--------|
-| `--domains` | `-d` | 域名列表，逗号分隔 | — |
-| `--file` | `-f` | 域名文件路径 | — |
-| `--country` | `-c` | 国家代码 | `us` |
-| `--output` | `-o` | CSV 输出文件路径 | — |
-| `--overview` | — | 获取完整概览数据 | `false` |
-| `--proxy` | `-p` | 手动指定代理 URL | 自动读取 |
-| `--delay` | — | 请求间隔秒数 | `2` |
-| `--json` | — | JSON 格式输出 | `false` |
+### Cookie 缓存
 
-## 输出示例
+- API 首次需要实时查询时，会从 HubStudio 获取 Cookie。
+- 之后在 TTL 内复用内存中的 Cookie。
+- 如果 Ahrefs 返回 `403`，会自动失效并重新刷新 Cookie。
 
-### 表格输出（默认）
-```
-============================================================
-  查询结果
-============================================================
+### 结果缓存
 
-域名                                     DR       AR         状态
-----------------------------------------------------------------------
-  example.com                            93.0     120        [OK]
-  google.com                             99.0     3          [OK]
-  github.com                             96.0     19         [OK]
+- 单域名和批量查询都会先查 SQLite。
+- 批量查询只会实时请求未命中的域名。
+- 例如第一次只查过 `example.com`，之后执行：
 
-  总计: 3 个域名, 成功: 3, 失败: 0
-============================================================
+```text
+/batch example.com google.com github.com
 ```
 
-### JSON 输出（`--json`）
-```json
-[
-  {
-    "domain": "example.com",
-    "domain_rating": 93.0,
-    "dr_delta": 0.0,
-    "ahrefs_rank": 120,
-    "ar_delta": -3
-  },
-  {
-    "domain": "google.com",
-    "domain_rating": 99.0,
-    "dr_delta": 0.0,
-    "ahrefs_rank": 3,
-    "ar_delta": 0
-  }
-]
+则只会实时请求 `google.com` 和 `github.com`。
+
+## CLI
+
+单域名：
+
+```powershell
+.\.venv\Scripts\python.exe main.py --domains "example.com"
 ```
 
-## 技术架构
+多域名：
 
-### 系统架构概览
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        main.py (CLI)                        │
-│  解析命令行参数 → 协调 HubStudio 和 Ahrefs 客户端 → 输出结果  │
-└────────────┬────────────────────────────┬───────────────────┘
-             │                            │
-             ▼                            ▼
-┌────────────────────────┐   ┌────────────────────────────────┐
-│   hubstudio.py         │   │   ahrefs.py                    │
-│   HubStudioClient      │   │   AhrefsClient                 │
-│                        │   │                                │
-│  • start_browser()     │──▶│  • cookie_header (认证)         │
-│  • stop_browser()      │   │  • proxy_url (SOCKS5代理)       │
-│  • get_cookies_via_cdp()│─▶│  • get_domain_rating()         │
-│  • export_cookies()    │   │  • batch_get_domain_rating()   │
-│  • get_proxy_for_env() │──▶│  • get_overview_data()         │
-└────────────────────────┘   └────────────────────────────────┘
-             │                            │
-             ▼                            ▼
-┌────────────────────────┐   ┌────────────────────────────────┐
-│  HubStudio Local API   │   │  Ahrefs Web API                │
-│  http://127.0.0.1:6873 │   │  https://app.ahrefs.com        │
-│  (本地指纹浏览器服务)     │   │  (通过 SOCKS5 代理访问)         │
-└────────────────────────┘   └────────────────────────────────┘
-             │
-             ▼
-┌────────────────────────┐
-│  Chrome DevTools       │
-│  Protocol (CDP)        │
-│  WebSocket 连接         │
-└────────────────────────┘
+```powershell
+.\.venv\Scripts\python.exe main.py --domains "example.com,google.com,github.com"
 ```
 
-### CDP Cookie 获取流程
+## 相关文档
 
-```
-1. 启动浏览器
-   POST /api/v1/browser/start
-   {
-     "containerCode": 970506927,
-     "args": ["--remote-allow-origins=*"],
-     "containerTabs": ["https://app.ahrefs.com"]
-   }
-   ↓
-   返回 debuggingPort: 58013
-
-2. 获取页面列表
-   GET http://127.0.0.1:58013/json
-   ↓
-   返回 webSocketDebuggerUrl
-
-3. 建立 WebSocket 连接
-   ws://127.0.0.1:58013/devtools/page/xxx
-   ↓
-   发送命令: {"id": 1, "method": "Network.getCookies"}
-   ↓
-   接收响应: {"result": {"cookies": [...]}}
-
-4. 过滤 ahrefs.com Cookie
-   包括 HttpOnly Cookie (BSSESSID)
-```
-
-## 常见问题
-
-### 1) CDP 连接失败 (403 Forbidden)
-
-**原因**: 浏览器未启用 `--remote-allow-origins=*` 参数
-
-**解决**: 程序会自动重启浏览器并添加该参数，无需手动操作
-
-### 2) 401 Unauthorized
-
-**原因**: Cookie 缺少会话认证信息（BSSESSID）
-
-**解决**:
-- 确保使用 CDP 方式获取 Cookie（程序默认）
-- 检查 HubStudio 环境是否已登录 Ahrefs
-- 查看日志确认是否成功获取 HttpOnly Cookie
-
-### 3) 浏览器启动失败
-
-**原因**:
-- HubStudio 客户端未运行
-- API 凭证配置错误
-- 环境 ID 不存在
-
-**解决**:
-- 确认 HubStudio 已启动，Local API 显示"正常"
-- 检查 `config.py` 中的 `APP_ID`、`APP_SECRET`、`CONTAINER_CODE`
-- 在 HubStudio 中确认环境存在且属于当前账号
-
-### 4) 代理连接失败
-
-**原因**: HubStudio 环境的代理配置不可用
-
-**解决**:
-- 检查 HubStudio 环境的代理配置是否正确
-- 测试代理是否可用
-- 使用 `--proxy` 参数手动指定代理
-
-### 5) 查询返回 DR: None
-
-**原因**: API 响应格式变化或解析失败
-
-**解决**:
-- 检查 Ahrefs API 是否正常
-- 查看日志中的响应内容
-- 确认域名格式正确
-
-## 依赖说明
-
-```txt
-requests              # HTTP 请求库
-pysocks               # SOCKS5 代理支持
-websocket-client      # WebSocket 客户端（CDP 连接）
-fastapi               # Web 框架（API 服务）
-uvicorn[standard]     # ASGI 服务器（API 服务）
-pydantic              # 数据验证（API 服务）
-python-telegram-bot   # Telegram Bot 框架
-```
-
-## 使用方式
-
-### 1. 命令行模式（CLI）
-
-```bash
-# 查询单个域名
-python main.py --domains "example.com"
-
-# 批量查询
-python main.py --domains "example.com,google.com,github.com"
-
-# 从文件批量查询
-python main.py --file domains.txt
-```
-
-### 2. API 服务模式
-
-```bash
-# 启动 API 服务
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
-
-# 访问 API 文档
-http://localhost:8000/docs
-
-# 查询域名
-curl -X POST http://localhost:8000/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"domain":"example.com","country":"us"}'
-```
-
-**详细文档**: [API.md](API.md)
-
-### 3. Telegram Bot 模式
-
-```bash
-# 配置 Bot Token
-export TELEGRAM_BOT_TOKEN="你的Bot Token"
-
-# 启动 API 服务（必需）
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
-
-# 启动 Bot
-python bot/main.py
-```
-
-**详细文档**: [BOT.md](BOT.md)
-
-**Bot 命令**:
-- `/start` - 开始使用
-- `/query example.com` - 查询单个域名
-- `/batch example.com google.com` - 批量查询
-- `/history` - 查看历史
-- `/help` - 帮助信息
-
-## 更新日志
-
-### v2.2.0 (2026-03-30)
-
-**新增：Telegram Bot 集成**
-
-- ✅ Telegram Bot 聊天界面查询
-- ✅ 命令处理：/start, /query, /batch, /history, /help
-- ✅ Markdown 格式化输出
-- ✅ 实时进度提示
-- ✅ 自动域名格式清理
-- ✅ 查询历史记录
-
-### v2.1.0 (2026-03-30)
-
-**新增：FastAPI REST API 服务**
-
-- ✅ RESTful API 服务
-- ✅ 异步任务处理
-- ✅ Swagger UI 文档
-- ✅ 任务状态追踪
-- ✅ 批量查询 API
-
-### v2.0.0 (2026-03-29)
-
-**重大更新：完全自动化 Cookie 获取**
-
-- ✅ 新增 CDP 协议支持，自动获取所有 Cookie（包括 HttpOnly）
-- ✅ 自动管理浏览器启动/关闭，无需手动操作
-- ✅ 自动打开 ahrefs.com 页面并等待加载
-- ✅ 智能回退机制：CDP → API → 手动配置
-- ✅ 修复 Windows 控制台中文编码问题
-- ✅ 修复 Ahrefs API 响应解析（支持数组格式）
-- ✅ 优化代理配置自动获取
-- ✅ 移除手动配置 BSSESSID 的需求
-
-### v1.0.0 (2026-03-21)
-
-**初始版本**
-
-- ✅ HubStudio API 集成
-- ✅ 批量查询域名 DR
-- ✅ 支持 SOCKS5 代理
-- ✅ 多种输出格式（表格、JSON、CSV）
-
-## 参考文档
-
-- HubStudio API 文档: https://api-docs.hubstudio.cn/
-- HubStudio Skill 示例: https://github.com/hubstudio-Max/hubstudio-skill
-- Chrome DevTools Protocol: https://chromedevtools.github.io/devtools-protocol/
-- Ahrefs 官网: https://ahrefs.com/
-
-## 许可证
-
-本项目仅供学习和研究使用。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
----
-
-**注意**: 请遵守 Ahrefs 的服务条款，合理使用 API，避免频繁请求导致账号被封。
+- [API.md](API.md)
+- [BOT.md](BOT.md)
+- [FILES.md](FILES.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
