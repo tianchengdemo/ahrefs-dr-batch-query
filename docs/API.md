@@ -49,11 +49,14 @@ API_KEYS = [
 
 ## 接口行为说明
 
-- 查询前会先规范化域名和国家代码。
+- 查询前会先规范化域名。
+- 当前 `/api/query` 和 `/api/batch` 返回的是全局域名 `DR/AR`。
+- 这两个接口中的 `country` 参数目前只做兼容保留，不影响 `DR/AR` 结果和缓存键。
 - 命中缓存时，接口会直接返回 `status = "completed"` 和 `results`。
 - 未命中缓存时，接口会返回 `status = "pending"` 和 `task_id`，后台异步执行。
 - `source` 字段可能是 `cache`、`live`、`mixed`。
 - 批量查询可能部分命中缓存、部分实时查询。
+- 当前 `DR/AR` 缓存按 `domain` 复用，不再按 `domain + country` 分片。
 
 ## 接口说明
 
@@ -91,6 +94,11 @@ curl.exe https://dr.lookav.net/health
   "country": "us"
 }
 ```
+
+说明：
+
+- `domain_rating` 和 `ahrefs_rank` 是域名全局指标
+- `country` 参数当前不改变这两个值，只保留接口兼容性
 
 PowerShell 示例：
 
@@ -144,6 +152,11 @@ curl.exe -X POST "https://dr.lookav.net/api/query" `
   "country": "us"
 }
 ```
+
+说明：
+
+- 当前批量接口返回的仍然是域名全局 `DR/AR`
+- `country` 参数当前不参与这两个字段的分国家计算
 
 PowerShell 示例：
 

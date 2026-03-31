@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Optional
 
 
+GLOBAL_CACHE_SCOPE = "__global__"
+
+
 class DomainResultCache:
     def __init__(
         self,
@@ -145,6 +148,31 @@ class DomainResultCache:
         result = json.loads(row[0])
         payload = self._serialize_result(domain, result, row[1], row[2])
         self._set_redis(domain, country, payload)
+        return payload
+
+    def get_any_country(self, domain: str) -> Optional[dict]:
+        if not self.enabled:
+            return None
+
+        now_ts = int(time.time())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT result_json, fetched_at, expires_at
+                FROM domain_query_cache
+                WHERE domain = ? AND expires_at > ?
+                ORDER BY fetched_at DESC
+                LIMIT 1
+                """,
+                (domain, now_ts),
+            ).fetchone()
+
+        if not row:
+            return None
+
+        result = json.loads(row[0])
+        payload = self._serialize_result(domain, result, row[1], row[2])
+        self._set_redis(domain, GLOBAL_CACHE_SCOPE, payload)
         return payload
 
     def set(self, domain: str, country: str, result: dict) -> None:

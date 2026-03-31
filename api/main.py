@@ -36,13 +36,13 @@ from config import (
     SOCKS5_PROXY,
 )
 from hubstudio import HubStudioClient
-from result_cache import DomainResultCache
+from result_cache import DomainResultCache, GLOBAL_CACHE_SCOPE
 
 
 app = FastAPI(
     title="Ahrefs DR Batch Query API",
     description="Query Ahrefs DR and AR with HubStudio-backed auth and local caching.",
-    version="2.4.0",
+    version="2.4.1",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -97,12 +97,20 @@ configured_api_keys = {key.strip() for key in API_KEYS if key and key.strip()}
 
 class QueryRequest(BaseModel):
     domain: str = Field(..., description="Domain", example="example.com")
-    country: Optional[str] = Field(DEFAULT_COUNTRY, description="Country code", example="us")
+    country: Optional[str] = Field(
+        DEFAULT_COUNTRY,
+        description="Reserved for future country-specific metrics. DR/AR endpoints return global domain values.",
+        example="us",
+    )
 
 
 class BatchQueryRequest(BaseModel):
     domains: List[str] = Field(..., description="Domain list", example=["example.com", "google.com"])
-    country: Optional[str] = Field(DEFAULT_COUNTRY, description="Country code", example="us")
+    country: Optional[str] = Field(
+        DEFAULT_COUNTRY,
+        description="Reserved for future country-specific metrics. DR/AR endpoints return global domain values.",
+        example="us",
+    )
 
 
 class TaskResponse(BaseModel):
@@ -159,6 +167,16 @@ def normalize_domain(domain: str) -> str:
 
 def normalize_country(country: Optional[str]) -> str:
     return (country or DEFAULT_COUNTRY).strip().lower()
+
+
+def get_metrics_query_country(_: Optional[str] = None) -> str:
+    # Domain Rating and Ahrefs Rank are domain-level metrics.
+    # Keep the upstream query country fixed so results and cache scope stay global.
+    return DEFAULT_COUNTRY
+
+
+def get_metrics_cache_scope() -> str:
+    return GLOBAL_CACHE_SCOPE
 
 
 def should_cache_result(result: dict) -> bool:
@@ -282,8 +300,22 @@ def fetch_fresh_results(domains: List[str], country: str, force_refresh: bool = 
     return results
 
 
+def get_cached_domain_metrics(domain: str) -> Optional[dict]:
+    cache_scope = get_metrics_cache_scope()
+    cached_result = result_cache.get(domain, cache_scope)
+    if cached_result:
+        return cached_result
+
+    legacy_result = result_cache.get_any_country(domain)
+    if legacy_result:
+        result_cache.set(domain, cache_scope, legacy_result)
+        return result_cache.get(domain, cache_scope) or legacy_result
+
+    return None
+
+
 def query_domains_with_cache(domains: List[str], country: str) -> dict:
-    normalized_country = normalize_country(country)
+    metrics_country = get_metrics_query_country(country)
     normalized_domains = []
     for domain in domains:
         normalized_domain = normalize_domain(domain)
@@ -298,7 +330,7 @@ def query_domains_with_cache(domains: List[str], country: str) -> dict:
     cached_domains = 0
 
     for index, domain in enumerate(normalized_domains):
-        cached_result = result_cache.get(domain, normalized_country)
+        cached_result = get_cached_domain_metrics(domain)
         if cached_result:
             ordered_results[index] = cached_result
             cached_domains += 1
@@ -308,13 +340,13 @@ def query_domains_with_cache(domains: List[str], country: str) -> dict:
         missing_indexes.append(index)
 
     if missing_domains:
-        fresh_results = fetch_fresh_results(missing_domains, normalized_country)
+        fresh_results = fetch_fresh_results(missing_domains, metrics_country)
         for index, requested_domain, result in zip(missing_indexes, missing_domains, fresh_results):
             normalized_result_domain = normalize_domain(result.get("domain", requested_domain))
             result["domain"] = normalized_result_domain
             ordered_results[index] = result
             if should_cache_result(result):
-                result_cache.set(normalized_result_domain, normalized_country, result)
+                result_cache.set(normalized_result_domain, get_metrics_cache_scope(), result)
 
     live_domains = len(missing_domains)
     return {
@@ -345,7 +377,7 @@ def process_query_task(task_id: str, domains: List[str], country: str) -> None:
 async def root():
     return {
         "name": "Ahrefs DR Batch Query API",
-        "version": "2.4.0",
+        "version": "2.4.1",
         "docs": "/docs",
         "health": "/health",
     }
@@ -367,7 +399,7 @@ async def health_check():
 @app.post("/api/query", response_model=TaskResponse, tags=["Query"], dependencies=[Depends(verify_api_key)])
 async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks):
     domain = normalize_domain(request.domain)
-    country = normalize_country(request.country)
+    requested_country = normalize_country(request.country)
     task_id = str(uuid.uuid4())
 
     tasks_storage[task_id] = {
@@ -375,13 +407,13 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
         "status": "pending",
         "created_at": datetime.now().isoformat(),
         "domains": [domain],
-        "country": country,
+        "country": requested_country,
         "source": None,
         "cached_domains": 0,
         "live_domains": 1,
     }
 
-    cached_result = result_cache.get(domain, country)
+    cached_result = get_cached_domain_metrics(domain)
     if cached_result:
         tasks_storage[task_id]["status"] = "completed"
         tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
@@ -403,7 +435,7 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
         process_query_task,
         task_id,
         [domain],
-        country,
+        requested_country,
     )
 
     return TaskResponse(
@@ -423,7 +455,7 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
         normalized_domain = normalize_domain(domain)
         if normalized_domain:
             domains.append(normalized_domain)
-    country = normalize_country(request.country)
+    requested_country = normalize_country(request.country)
     task_id = str(uuid.uuid4())
 
     tasks_storage[task_id] = {
@@ -431,7 +463,7 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
         "status": "pending",
         "created_at": datetime.now().isoformat(),
         "domains": domains,
-        "country": country,
+        "country": requested_country,
         "source": None,
         "cached_domains": 0,
         "live_domains": len(domains),
@@ -440,7 +472,7 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
     cached_results: List[Optional[dict]] = []
     all_cached = True
     for domain in domains:
-        cached_result = result_cache.get(domain, country)
+        cached_result = get_cached_domain_metrics(domain)
         cached_results.append(cached_result)
         if not cached_result:
             all_cached = False
@@ -472,7 +504,7 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
         process_query_task,
         task_id,
         domains,
-        country,
+        requested_country,
     )
 
     return TaskResponse(

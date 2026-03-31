@@ -16,10 +16,12 @@
 
 - API 是核心执行层，负责鉴权、缓存、查询和任务轮询
 - Bot 只是客户端，不再承载缓存和业务逻辑
+- 当前 `/api/query` 和 `/api/batch` 返回的是域名全局 `DR/AR`
+- 这两个接口中的 `country` 参数暂时仅保留兼容，不再参与 `DR/AR` 缓存分片
 - Cookie 默认在内存中复用 `30` 分钟
 - 成功查询结果默认缓存 `30` 天
 - Redis 作为热点缓存，SQLite 作为持久化缓存
-- 批量查询按 `domain + country` 分域名命中缓存
+- `DR/AR` 缓存按 `domain` 复用，不再按 `domain + country` 重复存储
 - 获取完 Cookie 后会自动关闭 HubStudio 浏览器
 - Docker 部署已支持 Caddy 自动 HTTPS
 
@@ -154,6 +156,11 @@ cd D:\DEV\ahrefs
 ```
 
 如果只有 `example.com` 已缓存，那么这次只会实时请求 `google.com` 和 `github.com`。
+
+注意：
+
+- 当前 `DR/AR` 是域名全局指标，不是国家维度指标
+- 如果后续需要国家维度数据，应走新的国家指标接口，而不是复用当前 `DR/AR` 接口
 
 ## 文档
 

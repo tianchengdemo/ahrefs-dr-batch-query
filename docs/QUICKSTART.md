@@ -70,12 +70,17 @@ https://dr.lookav.net
 X-API-Key: your-api-key
 ```
 
+说明：
+
+- 当前 API 的 `DR/AR` 查询是全局域名指标
+- 即使传不同 `country`，这两个字段也不应被当成国家维度数据
+
 ## 缓存规则
 
 - Cookie 默认复用 `30` 分钟
 - 查询结果默认缓存 `30` 天
 - 批量查询只会实时请求未命中的域名
-- 相同 `domain + country` 会优先命中缓存
+- 相同 `domain` 会优先命中缓存
 - Redis 只做热点缓存，SQLite 负责持久化
 
 ## 常见现象
