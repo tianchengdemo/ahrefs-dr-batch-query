@@ -11,8 +11,8 @@ Bot 只是客户端：
 
 当前行为：
 
-- 如果 API 直接返回 `completed + results`，Bot 不再轮询
-- 如果 API 返回 `pending`，Bot 会轮询 `/api/result/{task_id}`
+- 单域名查询在默认情况下通常会直接收到 `completed + results`，Bot 不再轮询
+- 如果 API 返回 `pending`，例如批量查询或单域名传了 `async_mode = true`，Bot 会轮询 `/api/result/{task_id}`
 - Bot 请求头会自动带上 `X-API-Key`
 
 ## 启动顺序
@@ -55,7 +55,7 @@ API_KEY = "your-api-key"
 说明：
 
 - `API_KEY` 必须和 API 端 `API_KEYS` 中的某一个一致
-- `POLL_INTERVAL` 是轮询任务结果的间隔秒数
+- `POLL_INTERVAL` 是收到 `pending` 后轮询任务结果的间隔秒数
 - `QUERY_TIMEOUT` 是单次查询最长等待时间
 - `MAX_BATCH_DOMAINS` 是 Bot 一次批量允许的最大域名数
 
@@ -87,5 +87,5 @@ API_KEY = "your-api-key"
 - API 负责鉴权
 - API 负责 Cookie 缓存
 - API 负责结果缓存
-- API 负责任务调度和状态查询
+- API 负责单域名同步查询，以及异步任务调度和状态查询
 - Bot 只负责把 Telegram 命令转成 API 请求

@@ -102,6 +102,11 @@ class QueryRequest(BaseModel):
         description="Reserved for future country-specific metrics. DR/AR endpoints return global domain values.",
         example="us",
     )
+    async_mode: bool = Field(
+        False,
+        description="When true, create a background task and return pending instead of waiting for the live result.",
+        example=False,
+    )
 
 
 class BatchQueryRequest(BaseModel):
@@ -187,6 +192,8 @@ def should_cache_result(result: dict) -> bool:
 
 def should_refresh_cookie(results: List[dict]) -> bool:
     for result in results:
+        if result is None:
+            continue
         error = str(result.get("error", "")).lower()
         if "403" in error or "forbidden" in error:
             return True
@@ -199,6 +206,17 @@ def detect_result_source(cached_domains: int, live_domains: int) -> str:
     if cached_domains == 0:
         return "live"
     return "mixed"
+
+
+def build_error_result(domain: str, error: str) -> dict:
+    return {
+        "domain": domain,
+        "domain_rating": None,
+        "ahrefs_rank": None,
+        "dr_delta": None,
+        "ar_delta": None,
+        "error": error,
+    }
 
 
 def invalidate_cookie_cache() -> None:
@@ -342,11 +360,20 @@ def query_domains_with_cache(domains: List[str], country: str) -> dict:
     if missing_domains:
         fresh_results = fetch_fresh_results(missing_domains, metrics_country)
         for index, requested_domain, result in zip(missing_indexes, missing_domains, fresh_results):
+            if result is None:
+                continue
             normalized_result_domain = normalize_domain(result.get("domain", requested_domain))
             result["domain"] = normalized_result_domain
             ordered_results[index] = result
             if should_cache_result(result):
                 result_cache.set(normalized_result_domain, get_metrics_cache_scope(), result)
+
+        for index, requested_domain in zip(missing_indexes, missing_domains):
+            if ordered_results[index] is None:
+                ordered_results[index] = build_error_result(
+                    requested_domain,
+                    "Upstream query returned no result",
+                )
 
     live_domains = len(missing_domains)
     return {
@@ -429,6 +456,22 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
             source="cache",
             cached_domains=1,
             live_domains=0,
+        )
+
+    if not request.async_mode:
+        process_query_task(task_id, [domain], requested_country)
+        task = tasks_storage[task_id]
+        if task["status"] == "failed":
+            raise HTTPException(status_code=502, detail=task.get("error", "Query failed"))
+
+        return TaskResponse(
+            task_id=task_id,
+            status=task["status"],
+            message="Result fetched live",
+            results=task.get("results"),
+            source=task.get("source"),
+            cached_domains=task.get("cached_domains", 0),
+            live_domains=task.get("live_domains", 0),
         )
 
     background_tasks.add_task(

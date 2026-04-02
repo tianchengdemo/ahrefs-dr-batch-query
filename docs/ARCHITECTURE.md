@@ -27,7 +27,7 @@
 - API 路由
 - API Key 鉴权
 - Cookie 内存缓存
-- 任务创建和轮询状态
+- 单域名同步查询，以及异步任务创建和轮询状态
 - 缓存命中判断
 - 调用 Ahrefs 查询
 - 在需要时从 HubStudio 获取 Cookie
@@ -54,7 +54,7 @@
 缓存键维度：
 
 ```text
-domain + country
+domain
 ```
 
 ### `ahrefs.py`
@@ -83,7 +83,7 @@ domain + country
 
 - 调用 API
 - 处理 `completed` 或 `pending` 响应
-- 在 `pending` 时轮询 `/api/result/{task_id}`
+- 仅在 `pending` 时轮询 `/api/result/{task_id}`
 
 ### `bot/handlers.py`
 
@@ -102,10 +102,11 @@ domain + country
 3. API 先查 Redis
 4. Redis 未命中时查 SQLite
 5. 如果缓存命中，直接返回 `completed`
-6. 如果缓存未命中，创建任务并异步实时查询
-7. API 需要 Cookie 时从 HubStudio 获取
-8. 获取完 Cookie 后关闭浏览器
-9. 查询结果写入 SQLite，并回填 Redis
+6. 如果缓存未命中且 `async_mode = false`，同步执行实时查询并直接返回 `completed + results`
+7. 如果缓存未命中且 `async_mode = true`，创建后台任务并立即返回 `pending + task_id`
+8. API 需要 Cookie 时从 HubStudio 获取
+9. 获取完 Cookie 后关闭浏览器
+10. 查询结果写入 SQLite，并回填 Redis
 
 ### 批量查询
 

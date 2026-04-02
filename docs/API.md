@@ -53,10 +53,26 @@ API_KEYS = [
 - 当前 `/api/query` 和 `/api/batch` 返回的是全局域名 `DR/AR`。
 - 这两个接口中的 `country` 参数目前只做兼容保留，不影响 `DR/AR` 结果和缓存键。
 - 命中缓存时，接口会直接返回 `status = "completed"` 和 `results`。
-- 未命中缓存时，接口会返回 `status = "pending"` 和 `task_id`，后台异步执行。
+- 单域名 `POST /api/query` 在未命中缓存时，默认会等待实时查询完成，并直接返回 `status = "completed"` 和 `results`。
+- 如果需要旧的异步行为，可以在 `POST /api/query` 的请求体里传 `async_mode = true`，此时接口会返回 `status = "pending"` 和 `task_id`，后台异步执行。
+- `POST /api/batch` 在存在实时查询时，仍然返回 `status = "pending"` 和 `task_id`，后台异步执行。
 - `source` 字段可能是 `cache`、`live`、`mixed`。
 - 批量查询可能部分命中缓存、部分实时查询。
 - 当前 `DR/AR` 缓存按 `domain` 复用，不再按 `domain + country` 分片。
+
+## 调用前先看
+
+接入时只要记住这 3 条：
+
+1. 单域名默认调用 `POST /api/query`，并传 `async_mode = false`
+2. 只有返回里出现 `status = "pending"` 时，才需要从同一个响应里取 `task_id`
+3. 拿到 `task_id` 后，调用 `GET /api/result/{task_id}` 轮询，直到任务变成 `completed` 或 `failed`
+
+哪些请求会直接返回结果，哪些会先返回任务：
+
+- `POST /api/query` + `async_mode = false`：通常直接返回 `completed + results`
+- `POST /api/query` + `async_mode = true`：立即返回 `pending + task_id`
+- `POST /api/batch`：只要存在实时查询，就返回 `pending + task_id`
 
 ## 接口说明
 
@@ -91,14 +107,23 @@ curl.exe https://dr.lookav.net/health
 ```json
 {
   "domain": "example.com",
-  "country": "us"
+  "country": "us",
+  "async_mode": false
 }
 ```
+
+请求参数：
+
+- `domain`：必填，单个域名
+- `country`：可选，当前仅保留兼容，不影响返回的 `DR/AR`
+- `async_mode`：可选，默认 `false`
 
 说明：
 
 - `domain_rating` 和 `ahrefs_rank` 是域名全局指标
 - `country` 参数当前不改变这两个值，只保留接口兼容性
+- `async_mode` 默认为 `false`，表示接口会等待实时结果并直接返回
+- 如果传 `async_mode = true`，当前这个创建响应里就会返回 `task_id`，客户端随后轮询结果
 
 PowerShell 示例：
 
@@ -106,7 +131,7 @@ PowerShell 示例：
 curl.exe -X POST "https://dr.lookav.net/api/query" `
   -H "Content-Type: application/json" `
   -H "X-API-Key: your-api-key" `
-  -d "{\"domain\":\"example.com\",\"country\":\"us\"}"
+  -d "{\"domain\":\"example.com\",\"country\":\"us\",\"async_mode\":false}"
 ```
 
 缓存命中时的即时返回：
@@ -129,7 +154,27 @@ curl.exe -X POST "https://dr.lookav.net/api/query" `
 }
 ```
 
-实时查询时的返回：
+未命中缓存且 `async_mode = false` 时的实时返回：
+
+```json
+{
+  "task_id": "1e7590dd-6d53-4f8d-8ebc-c6404447b4b5",
+  "status": "completed",
+  "message": "Result fetched live",
+  "results": [
+    {
+      "domain": "example.com",
+      "domain_rating": 79,
+      "ahrefs_rank": 12345
+    }
+  ],
+  "source": "live",
+  "cached_domains": 0,
+  "live_domains": 1
+}
+```
+
+传 `async_mode = true` 时的立即返回：
 
 ```json
 {
@@ -153,10 +198,16 @@ curl.exe -X POST "https://dr.lookav.net/api/query" `
 }
 ```
 
+请求参数：
+
+- `domains`：必填，域名数组
+- `country`：可选，当前仅保留兼容，不影响返回的 `DR/AR`
+
 说明：
 
 - 当前批量接口返回的仍然是域名全局 `DR/AR`
 - `country` 参数当前不参与这两个字段的分国家计算
+- 如果这批域名里有未命中缓存的项，当前这个创建响应里会返回 `task_id`
 
 PowerShell 示例：
 
@@ -225,12 +276,59 @@ curl.exe -H "X-API-Key: your-api-key" "https://dr.lookav.net/api/tasks"
 
 ## 推荐调用流程
 
-推荐客户端流程：
+### 流程 1：单域名同步查询
 
-1. 调用 `POST /api/query` 或 `POST /api/batch`
-2. 如果返回 `status = "completed"`，直接使用 `results`
-3. 如果返回 `status = "pending"`，使用 `task_id` 轮询 `GET /api/result/{task_id}`
-4. 当 `status` 变成 `completed` 或 `failed` 时结束轮询
+适用场景：
+
+- 大多数单域名调用
+- 希望一次请求直接拿到结果
+
+步骤：
+
+1. 调用 `POST /api/query`
+2. 请求体传 `domain`，可选传 `country`，并显式传 `async_mode = false`
+3. 如果返回 `status = "completed"`，直接读取 `results`
+4. 这个流程通常不需要使用 `task_id`
+
+### 流程 2：单域名异步查询
+
+适用场景：
+
+- 调用方不想等待实时查询完成
+- 需要先拿任务，再自行轮询
+
+步骤：
+
+1. 调用 `POST /api/query`
+2. 请求体传 `domain`、`country`、`async_mode = true`
+3. 从这个创建响应里读取 `task_id`
+4. 调用 `GET /api/result/{task_id}` 轮询任务
+5. 当返回 `status = "completed"` 时读取 `results`
+6. 当返回 `status = "failed"` 时读取 `error`
+
+### 流程 3：批量查询
+
+适用场景：
+
+- 一次查询多个域名
+
+步骤：
+
+1. 调用 `POST /api/batch`
+2. 请求体传 `domains` 数组，可选传 `country`
+3. 如果返回 `status = "pending"`，从这个创建响应里读取 `task_id`
+4. 调用 `GET /api/result/{task_id}` 轮询任务
+5. 当返回 `status = "completed"` 时读取 `results`
+6. 返回中的 `cached_domains` 和 `live_domains` 可用于判断这次有多少域名走了缓存、多少域名走了实时查询
+
+### 轮询规则
+
+统一规则：
+
+- 只有返回 `status = "pending"` 时，才需要读取 `task_id`
+- `task_id` 就在当前响应 JSON 里，不需要额外调用别的接口获取
+- 轮询目标固定是 `GET /api/result/{task_id}`
+- 轮询结束条件是 `status = "completed"` 或 `status = "failed"`
 
 Python 示例：
 
@@ -248,7 +346,7 @@ HEADERS = {
 resp = requests.post(
     f"{BASE_URL}/api/query",
     headers=HEADERS,
-    json={"domain": "example.com", "country": "us"},
+    json={"domain": "example.com", "country": "us", "async_mode": False},
     timeout=30,
 )
 resp.raise_for_status()
@@ -269,6 +367,8 @@ else:
         if payload["status"] == "completed":
             print(payload["results"])
             break
+        if payload["status"] == "failed":
+            raise RuntimeError(payload["error"])
         time.sleep(2)
 ```
 

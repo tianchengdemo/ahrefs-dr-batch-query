@@ -151,12 +151,15 @@ class AhrefsClient:
                 elif "data" in data:
                     inner = data["data"]
 
-                if "domainRating" in inner:
+                if not isinstance(inner, dict):
+                    inner = {}
+
+                if "domainRating" in inner and isinstance(inner["domainRating"], dict):
                     dr_info = inner["domainRating"]
                     result["domain_rating"] = dr_info.get("value")
                     result["dr_delta"] = dr_info.get("delta")
 
-                if "ahrefsRank" in inner:
+                if "ahrefsRank" in inner and isinstance(inner["ahrefsRank"], dict):
                     ar_info = inner["ahrefsRank"]
                     result["ahrefs_rank"] = ar_info.get("value")
                     result["ar_delta"] = ar_info.get("delta")

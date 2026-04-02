@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY api ./api
 COPY bot ./bot
+COPY tests ./tests
 COPY ahrefs.py .
 COPY hubstudio.py .
 COPY result_cache.py .

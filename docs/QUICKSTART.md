@@ -74,6 +74,7 @@ X-API-Key: your-api-key
 
 - 当前 API 的 `DR/AR` 查询是全局域名指标
 - 即使传不同 `country`，这两个字段也不应被当成国家维度数据
+- 单域名 `POST /api/query` 默认同步返回实时结果；如需异步可传 `async_mode = true`
 
 ## 缓存规则
 

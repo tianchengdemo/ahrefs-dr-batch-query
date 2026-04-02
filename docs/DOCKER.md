@@ -60,6 +60,12 @@ docker compose down
 docker compose ps
 ```
 
+在容器内运行测试：
+
+```powershell
+docker compose run --rm api python -m unittest discover -s tests -v
+```
+
 ## 域名访问
 
 Compose 暴露：
