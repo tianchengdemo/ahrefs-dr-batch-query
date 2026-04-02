@@ -19,6 +19,7 @@
 - 当前 `/api/query` 和 `/api/batch` 返回的是域名全局 `DR/AR`
 - 这两个接口中的 `country` 参数暂时仅保留兼容，不再参与 `DR/AR` 缓存分片
 - 单域名 `POST /api/query` 默认同步返回实时结果；如需异步可传 `async_mode = true`
+- API 默认限制批量请求大小、全局实时查询并发和排队长度，避免过度触发 Ahrefs 风控
 - Cookie 默认在内存中复用 `30` 分钟
 - 成功查询结果默认缓存 `30` 天
 - Redis 作为热点缓存，SQLite 作为持久化缓存
@@ -95,6 +96,10 @@ RESULT_CACHE_TTL_DAYS = 30
 REDIS_ENABLED = False
 REDIS_URL = "redis://127.0.0.1:6379/0"
 REDIS_CACHE_TTL_SECONDS = 21600
+API_MAX_BATCH_DOMAINS = 20
+API_MAX_CONCURRENT_LIVE_TASKS = 2
+API_MAX_QUEUED_LIVE_TASKS = 20
+API_TASK_TIMEOUT_SECONDS = 180
 API_AUTH_ENABLED = True
 API_KEYS = ["replace-with-a-long-random-key"]
 ```

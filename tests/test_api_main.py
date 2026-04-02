@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi import BackgroundTasks
+from fastapi import HTTPException
 
 from api import main as api_main
 
@@ -43,16 +44,17 @@ class QueryDomainTests(unittest.IsolatedAsyncioTestCase):
         }
         background_tasks = BackgroundTasks()
 
-        def complete_task(task_id: str, domains: list[str], country: str) -> None:
+        def complete_task_now(task_id: str, domains: list[str], country: str) -> bool:
             api_main.tasks_storage[task_id]["status"] = "completed"
             api_main.tasks_storage[task_id]["results"] = [live_result]
             api_main.tasks_storage[task_id]["source"] = "live"
             api_main.tasks_storage[task_id]["cached_domains"] = 0
             api_main.tasks_storage[task_id]["live_domains"] = 1
+            return True
 
         with patch.object(api_main, "get_cached_domain_metrics", return_value=None), patch.object(
-            api_main, "process_query_task", side_effect=complete_task
-        ) as process_query_task:
+            api_main, "run_live_task_now", side_effect=complete_task_now
+        ) as run_live_task_now:
             response = await api_main.query_domain(
                 api_main.QueryRequest(domain="example.com", country="us"),
                 background_tasks,
@@ -69,14 +71,28 @@ class QueryDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.results[0].domain_rating, float(live_result["domain_rating"]))
         self.assertEqual(response.results[0].ahrefs_rank, live_result["ahrefs_rank"])
         self.assertEqual(len(background_tasks.tasks), 0)
-        process_query_task.assert_called_once()
+        run_live_task_now.assert_called_once()
+
+    async def test_query_domain_rejects_sync_live_query_when_workers_are_busy(self) -> None:
+        with patch.object(api_main, "get_cached_domain_metrics", return_value=None), patch.object(
+            api_main, "run_live_task_now", return_value=False
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                await api_main.query_domain(
+                    api_main.QueryRequest(domain="example.com", country="us"),
+                    BackgroundTasks(),
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 429)
+        self.assertIn("async_mode=true", exc_info.exception.detail)
+        self.assertEqual(api_main.tasks_storage, {})
 
     async def test_query_domain_returns_pending_when_async_mode_enabled(self) -> None:
         background_tasks = BackgroundTasks()
 
         with patch.object(api_main, "get_cached_domain_metrics", return_value=None), patch.object(
-            api_main, "process_query_task"
-        ) as process_query_task:
+            api_main, "enqueue_live_task"
+        ) as enqueue_live_task:
             response = await api_main.query_domain(
                 api_main.QueryRequest(domain="example.com", country="us", async_mode=True),
                 background_tasks,
@@ -88,8 +104,52 @@ class QueryDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.cached_domains, 0)
         self.assertEqual(response.live_domains, 1)
         self.assertIsNone(response.results)
-        self.assertEqual(len(background_tasks.tasks), 1)
-        process_query_task.assert_not_called()
+        self.assertEqual(len(background_tasks.tasks), 0)
+        enqueue_live_task.assert_called_once()
+
+    async def test_batch_query_rejects_requests_above_limit(self) -> None:
+        domains = [f"example{i}.com" for i in range(api_main.API_MAX_BATCH_DOMAINS + 1)]
+
+        with self.assertRaises(HTTPException) as exc_info:
+            await api_main.batch_query(
+                api_main.BatchQueryRequest(domains=domains, country="us"),
+                BackgroundTasks(),
+            )
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn(str(api_main.API_MAX_BATCH_DOMAINS), exc_info.exception.detail)
+
+    async def test_batch_query_cleans_up_task_when_queue_is_full(self) -> None:
+        with patch.object(
+            api_main,
+            "enqueue_live_task",
+            side_effect=HTTPException(status_code=429, detail="queue full"),
+        ), patch.object(api_main, "get_cached_domain_metrics", return_value=None):
+            with self.assertRaises(HTTPException):
+                await api_main.batch_query(
+                    api_main.BatchQueryRequest(domains=["example.com"], country="us"),
+                    BackgroundTasks(),
+                )
+
+        self.assertEqual(api_main.tasks_storage, {})
+
+    async def test_batch_query_queues_live_work(self) -> None:
+        background_tasks = BackgroundTasks()
+
+        with patch.object(
+            api_main, "get_cached_domain_metrics", side_effect=[{"domain": "example.com"}, None]
+        ), patch.object(api_main, "enqueue_live_task") as enqueue_live_task:
+            response = await api_main.batch_query(
+                api_main.BatchQueryRequest(domains=["example.com", "google.com"], country="us"),
+                background_tasks,
+            )
+
+        self.assertEqual(response.status, "pending")
+        self.assertEqual(response.source, "mixed")
+        self.assertEqual(response.cached_domains, 1)
+        self.assertEqual(response.live_domains, 1)
+        self.assertEqual(len(background_tasks.tasks), 0)
+        enqueue_live_task.assert_called_once()
 
 
 class QueryDomainsWithCacheTests(unittest.TestCase):
@@ -156,6 +216,16 @@ class QueryDomainsWithCacheTests(unittest.TestCase):
         self.assertEqual(response["results"][0]["domain"], "missing.com")
         self.assertEqual(response["results"][0]["error"], "Upstream query returned no result")
         cache_set.assert_not_called()
+
+    def test_run_live_task_now_returns_false_when_queue_has_backlog(self) -> None:
+        with patch.object(api_main._live_task_queue, "qsize", return_value=1):
+            self.assertFalse(api_main.run_live_task_now("task-1", ["example.com"], "us"))
+
+    def test_run_live_task_now_returns_false_when_no_worker_slot_is_available(self) -> None:
+        with patch.object(api_main._live_task_queue, "qsize", return_value=0), patch.object(
+            api_main._live_task_slots, "acquire", return_value=False
+        ):
+            self.assertFalse(api_main.run_live_task_now("task-1", ["example.com"], "us"))
 
 
 if __name__ == "__main__":

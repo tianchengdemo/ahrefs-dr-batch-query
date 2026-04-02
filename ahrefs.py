@@ -78,7 +78,18 @@ class AhrefsClient:
         }
         return json.dumps(input_obj, separators=(",", ":"))
 
-    def get_domain_rating(self, domain, country=None):
+    def _build_timeout_result(self, domain, error):
+        return {
+            "domain": domain,
+            "domain_rating": None,
+            "ahrefs_rank": None,
+            "dr_delta": None,
+            "ar_delta": None,
+            "error": error,
+            "raw_response": None,
+        }
+
+    def get_domain_rating(self, domain, country=None, deadline_ts=None):
         """
         查询单个域名的 Domain Rating
 
@@ -107,8 +118,15 @@ class AhrefsClient:
 
         for attempt in range(1, MAX_RETRIES + 1):
             try:
+                request_timeout = REQUEST_TIMEOUT
+                if deadline_ts is not None:
+                    remaining = deadline_ts - time.monotonic()
+                    if remaining <= 0:
+                        return self._build_timeout_result(domain, "Task deadline exceeded")
+                    request_timeout = min(REQUEST_TIMEOUT, max(1.0, remaining))
+
                 print(f"[Ahrefs] 查询 DR: {domain} (尝试 {attempt}/{MAX_RETRIES})")
-                resp = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp = self.session.get(url, params=params, timeout=request_timeout)
 
                 if resp.status_code == 403:
                     print(f"[Ahrefs] ⚠ 403 Forbidden — Cookie 可能已过期或被封")
@@ -123,6 +141,11 @@ class AhrefsClient:
                 if resp.status_code == 429:
                     wait = min(30, REQUEST_DELAY * attempt * 3)
                     print(f"[Ahrefs] ⚠ 429 限流，等待 {wait}s 后重试...")
+                    if deadline_ts is not None:
+                        remaining = deadline_ts - time.monotonic()
+                        if remaining <= 0:
+                            return self._build_timeout_result(domain, "Task deadline exceeded")
+                        wait = min(wait, remaining)
                     time.sleep(wait)
                     continue
 
@@ -181,7 +204,13 @@ class AhrefsClient:
                         "error": f"代理连接失败: {e}",
                         "raw_response": None,
                     }
-                time.sleep(REQUEST_DELAY)
+                sleep_for = REQUEST_DELAY
+                if deadline_ts is not None:
+                    remaining = deadline_ts - time.monotonic()
+                    if remaining <= 0:
+                        return self._build_timeout_result(domain, "Task deadline exceeded")
+                    sleep_for = min(sleep_for, remaining)
+                time.sleep(sleep_for)
 
             except requests.exceptions.RequestException as e:
                 print(f"[Ahrefs] [ERROR] 请求失败: {e}")
@@ -193,7 +222,13 @@ class AhrefsClient:
                         "error": str(e),
                         "raw_response": None,
                     }
-                time.sleep(REQUEST_DELAY)
+                sleep_for = REQUEST_DELAY
+                if deadline_ts is not None:
+                    remaining = deadline_ts - time.monotonic()
+                    if remaining <= 0:
+                        return self._build_timeout_result(domain, "Task deadline exceeded")
+                    sleep_for = min(sleep_for, remaining)
+                time.sleep(sleep_for)
 
             except (json.JSONDecodeError, KeyError) as e:
                 print(f"[Ahrefs] [ERROR] 解析响应失败: {e}")
@@ -205,7 +240,7 @@ class AhrefsClient:
                     "raw_response": resp.text if 'resp' in dir() else None,
                 }
 
-    def batch_get_domain_rating(self, domains, country=None, delay=None):
+    def batch_get_domain_rating(self, domains, country=None, delay=None, deadline_ts=None):
         """
         批量查询多个域名的 DR
 
@@ -225,19 +260,38 @@ class AhrefsClient:
         print(f"  开始批量查询 {total} 个域名的 Domain Rating")
         print(f"{'='*60}\n")
 
-        for i, domain in enumerate(domains, 1):
-            domain = domain.strip()
+        for index, raw_domain in enumerate(domains):
+            domain = raw_domain.strip()
             if not domain:
                 continue
 
-            print(f"\n--- [{i}/{total}] {domain} ---")
-            result = self.get_domain_rating(domain, country)
+            if deadline_ts is not None and time.monotonic() >= deadline_ts:
+                for remaining_domain in domains[index:]:
+                    remaining_domain = remaining_domain.strip()
+                    if remaining_domain:
+                        results.append(
+                            self._build_timeout_result(
+                                remaining_domain,
+                                "Task deadline exceeded",
+                            )
+                        )
+                break
+
+            display_index = index + 1
+            print(f"\n--- [{display_index}/{total}] {domain} ---")
+            result = self.get_domain_rating(domain, country, deadline_ts=deadline_ts)
             results.append(result)
 
             # 除最后一个外，等待指定间隔
-            if i < total:
+            if display_index < total:
                 print(f"[Ahrefs] 等待 {delay}s ...")
-                time.sleep(delay)
+                sleep_for = delay
+                if deadline_ts is not None:
+                    remaining = deadline_ts - time.monotonic()
+                    if remaining <= 0:
+                        continue
+                    sleep_for = min(delay, remaining)
+                time.sleep(sleep_for)
 
         return results
 

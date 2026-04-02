@@ -59,6 +59,10 @@ API_KEYS = [
 - `source` 字段可能是 `cache`、`live`、`mixed`。
 - 批量查询可能部分命中缓存、部分实时查询。
 - 当前 `DR/AR` 缓存按 `domain` 复用，不再按 `domain + country` 分片。
+- `POST /api/batch` 默认最多支持 `20` 个域名；可通过配置调整。
+- API 会限制全局实时查询并发和排队长度，避免短时间内把 Ahrefs 打爆。
+- 当实时 worker 忙或队列已满时，接口会返回 `429`。
+- 单个实时任务有最大执行时长，超时后未完成的域名会返回超时错误。
 
 ## 调用前先看
 
@@ -96,7 +100,15 @@ curl.exe https://dr.lookav.net/health
   "result_cache_ttl_days": 30,
   "cookie_cache_ttl_minutes": 30,
   "redis_enabled": true,
-  "redis_cache_ttl_seconds": 21600
+  "redis_cache_ttl_seconds": 21600,
+  "api_max_batch_domains": 20,
+  "api_task_timeout_seconds": 180,
+  "live_task_limits": {
+    "active": 0,
+    "queued": 0,
+    "max_concurrent": 2,
+    "max_queued": 20
+  }
 }
 ```
 
@@ -124,6 +136,7 @@ curl.exe https://dr.lookav.net/health
 - `country` 参数当前不改变这两个值，只保留接口兼容性
 - `async_mode` 默认为 `false`，表示接口会等待实时结果并直接返回
 - 如果传 `async_mode = true`，当前这个创建响应里就会返回 `task_id`，客户端随后轮询结果
+- 当实时 worker 正忙或队列已有积压时，`async_mode = false` 可能返回 `429`
 
 PowerShell 示例：
 
@@ -208,6 +221,8 @@ curl.exe -X POST "https://dr.lookav.net/api/query" `
 - 当前批量接口返回的仍然是域名全局 `DR/AR`
 - `country` 参数当前不参与这两个字段的分国家计算
 - 如果这批域名里有未命中缓存的项，当前这个创建响应里会返回 `task_id`
+- 单次请求的域名数量默认不能超过 `20`
+- 当全局实时任务队列已满时，接口会返回 `429`
 
 PowerShell 示例：
 
@@ -330,6 +345,17 @@ curl.exe -H "X-API-Key: your-api-key" "https://dr.lookav.net/api/tasks"
 - 轮询目标固定是 `GET /api/result/{task_id}`
 - 轮询结束条件是 `status = "completed"` 或 `status = "failed"`
 
+### 限流与保护策略
+
+默认保护值：
+
+- `API_MAX_BATCH_DOMAINS = 20`
+- `API_MAX_CONCURRENT_LIVE_TASKS = 2`
+- `API_MAX_QUEUED_LIVE_TASKS = 20`
+- `API_TASK_TIMEOUT_SECONDS = 180`
+
+这些值可以在 `config.py` 或环境变量中调整。
+
 Python 示例：
 
 ```python
@@ -407,6 +433,10 @@ RESULT_CACHE_TTL_DAYS = 30
 REDIS_ENABLED = True
 REDIS_URL = "redis://redis:6379/0"
 REDIS_CACHE_TTL_SECONDS = 21600
+API_MAX_BATCH_DOMAINS = 20
+API_MAX_CONCURRENT_LIVE_TASKS = 2
+API_MAX_QUEUED_LIVE_TASKS = 20
+API_TASK_TIMEOUT_SECONDS = 180
 API_AUTH_ENABLED = True
 API_KEYS = ["your-api-key"]
 ```

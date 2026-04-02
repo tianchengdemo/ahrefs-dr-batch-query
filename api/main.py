@@ -4,6 +4,7 @@ Ahrefs DR query API.
 """
 
 import re
+import queue
 import threading
 import time
 import uuid
@@ -73,6 +74,42 @@ REDIS_KEY_PREFIX = os.getenv(
     "REDIS_KEY_PREFIX",
     getattr(app_config, "REDIS_KEY_PREFIX", "ahrefs:domain-cache:"),
 ).strip()
+API_MAX_BATCH_DOMAINS = max(
+    1,
+    int(
+        os.getenv(
+            "API_MAX_BATCH_DOMAINS",
+            str(getattr(app_config, "API_MAX_BATCH_DOMAINS", 20)),
+        )
+    ),
+)
+API_MAX_CONCURRENT_LIVE_TASKS = max(
+    1,
+    int(
+        os.getenv(
+            "API_MAX_CONCURRENT_LIVE_TASKS",
+            str(getattr(app_config, "API_MAX_CONCURRENT_LIVE_TASKS", 2)),
+        )
+    ),
+)
+API_MAX_QUEUED_LIVE_TASKS = max(
+    1,
+    int(
+        os.getenv(
+            "API_MAX_QUEUED_LIVE_TASKS",
+            str(getattr(app_config, "API_MAX_QUEUED_LIVE_TASKS", 20)),
+        )
+    ),
+)
+API_TASK_TIMEOUT_SECONDS = max(
+    10,
+    int(
+        os.getenv(
+            "API_TASK_TIMEOUT_SECONDS",
+            str(getattr(app_config, "API_TASK_TIMEOUT_SECONDS", 180)),
+        )
+    ),
+)
 
 tasks_storage: Dict[str, dict] = {}
 result_cache = DomainResultCache(
@@ -93,6 +130,14 @@ _cookie_cache = {
 }
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 configured_api_keys = {key.strip() for key in API_KEYS if key and key.strip()}
+_live_task_slots = threading.BoundedSemaphore(API_MAX_CONCURRENT_LIVE_TASKS)
+_live_task_queue: "queue.Queue[tuple[str, List[str], str]]" = queue.Queue(
+    maxsize=API_MAX_QUEUED_LIVE_TASKS
+)
+_live_task_workers_started = False
+_live_task_workers_lock = threading.Lock()
+_live_task_metrics_lock = threading.Lock()
+_live_task_active = 0
 
 
 class QueryRequest(BaseModel):
@@ -219,6 +264,124 @@ def build_error_result(domain: str, error: str) -> dict:
     }
 
 
+def build_task_record(task_id: str, domains: List[str], country: str) -> dict:
+    return {
+        "task_id": task_id,
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+        "domains": domains,
+        "country": country,
+        "source": None,
+        "cached_domains": 0,
+        "live_domains": len(domains),
+    }
+
+
+def get_live_task_stats() -> dict:
+    with _live_task_metrics_lock:
+        active = _live_task_active
+    return {
+        "active": active,
+        "queued": _live_task_queue.qsize(),
+        "max_concurrent": API_MAX_CONCURRENT_LIVE_TASKS,
+        "max_queued": API_MAX_QUEUED_LIVE_TASKS,
+    }
+
+
+def _set_task_completion_event(task_id: str) -> None:
+    task = tasks_storage.get(task_id)
+    if not task:
+        return
+    completion_event = task.get("_completion_event")
+    if completion_event:
+        completion_event.set()
+
+
+def _mark_live_task_started(task_id: str) -> None:
+    with _live_task_metrics_lock:
+        global _live_task_active
+        _live_task_active += 1
+    task = tasks_storage.get(task_id)
+    if task:
+        task["status"] = "processing"
+        task["started_at"] = datetime.now().isoformat()
+
+
+def _mark_live_task_finished(task_id: str) -> None:
+    with _live_task_metrics_lock:
+        global _live_task_active
+        _live_task_active = max(0, _live_task_active - 1)
+    _set_task_completion_event(task_id)
+
+
+def _live_task_worker() -> None:
+    while True:
+        task_id, domains, country = _live_task_queue.get()
+        _live_task_slots.acquire()
+        try:
+            _mark_live_task_started(task_id)
+            process_query_task(task_id, domains, country)
+        finally:
+            _mark_live_task_finished(task_id)
+            _live_task_slots.release()
+            _live_task_queue.task_done()
+
+
+def ensure_live_task_workers_started() -> None:
+    global _live_task_workers_started
+    if _live_task_workers_started:
+        return
+    with _live_task_workers_lock:
+        if _live_task_workers_started:
+            return
+        for index in range(API_MAX_CONCURRENT_LIVE_TASKS):
+            worker = threading.Thread(
+                target=_live_task_worker,
+                name=f"live-query-worker-{index + 1}",
+                daemon=True,
+            )
+            worker.start()
+        _live_task_workers_started = True
+
+
+def enqueue_live_task(task_id: str, domains: List[str], country: str) -> None:
+    ensure_live_task_workers_started()
+    task = tasks_storage[task_id]
+    task["_completion_event"] = threading.Event()
+    task["queued_at"] = datetime.now().isoformat()
+    try:
+        _live_task_queue.put_nowait((task_id, domains, country))
+    except queue.Full as exc:
+        task.pop("_completion_event", None)
+        task["status"] = "failed"
+        task["error"] = (
+            f"Live query queue is full ({API_MAX_QUEUED_LIVE_TASKS}). "
+            "Retry later or reduce concurrency."
+        )
+        task["completed_at"] = datetime.now().isoformat()
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Live query queue is full ({API_MAX_QUEUED_LIVE_TASKS}). "
+                "Retry later or use a smaller request rate."
+            ),
+        ) from exc
+
+
+def run_live_task_now(task_id: str, domains: List[str], country: str) -> bool:
+    if _live_task_queue.qsize() > 0:
+        return False
+    if not _live_task_slots.acquire(blocking=False):
+        return False
+    try:
+        _mark_live_task_started(task_id)
+        process_query_task(task_id, domains, country)
+        return True
+    finally:
+        _mark_live_task_finished(task_id)
+        _live_task_slots.release()
+
+
 def invalidate_cookie_cache() -> None:
     with _cookie_lock:
         _cookie_cache["cookie"] = None
@@ -306,14 +469,19 @@ def get_ahrefs_client(force_refresh: bool = False) -> AhrefsClient:
     return AhrefsClient(cookie_header=cookie, proxy_url=proxy_url)
 
 
-def fetch_fresh_results(domains: List[str], country: str, force_refresh: bool = False) -> List[dict]:
+def fetch_fresh_results(
+    domains: List[str],
+    country: str,
+    force_refresh: bool = False,
+    deadline_ts: Optional[float] = None,
+) -> List[dict]:
     client = get_ahrefs_client(force_refresh=force_refresh)
-    results = client.batch_get_domain_rating(domains, country=country)
+    results = client.batch_get_domain_rating(domains, country=country, deadline_ts=deadline_ts)
 
     if should_refresh_cookie(results) and not force_refresh:
         invalidate_cookie_cache()
         client = get_ahrefs_client(force_refresh=True)
-        results = client.batch_get_domain_rating(domains, country=country)
+        results = client.batch_get_domain_rating(domains, country=country, deadline_ts=deadline_ts)
 
     return results
 
@@ -332,7 +500,11 @@ def get_cached_domain_metrics(domain: str) -> Optional[dict]:
     return None
 
 
-def query_domains_with_cache(domains: List[str], country: str) -> dict:
+def query_domains_with_cache(
+    domains: List[str],
+    country: str,
+    deadline_ts: Optional[float] = None,
+) -> dict:
     metrics_country = get_metrics_query_country(country)
     normalized_domains = []
     for domain in domains:
@@ -358,7 +530,11 @@ def query_domains_with_cache(domains: List[str], country: str) -> dict:
         missing_indexes.append(index)
 
     if missing_domains:
-        fresh_results = fetch_fresh_results(missing_domains, metrics_country)
+        fresh_results = fetch_fresh_results(
+            missing_domains,
+            metrics_country,
+            deadline_ts=deadline_ts,
+        )
         for index, requested_domain, result in zip(missing_indexes, missing_domains, fresh_results):
             if result is None:
                 continue
@@ -386,8 +562,8 @@ def query_domains_with_cache(domains: List[str], country: str) -> dict:
 
 def process_query_task(task_id: str, domains: List[str], country: str) -> None:
     try:
-        tasks_storage[task_id]["status"] = "processing"
-        query_output = query_domains_with_cache(domains, country)
+        deadline_ts = time.monotonic() + API_TASK_TIMEOUT_SECONDS
+        query_output = query_domains_with_cache(domains, country, deadline_ts=deadline_ts)
         tasks_storage[task_id]["status"] = "completed"
         tasks_storage[task_id]["completed_at"] = datetime.now().isoformat()
         tasks_storage[task_id]["results"] = query_output["results"]
@@ -420,6 +596,9 @@ async def health_check():
         "cookie_cache_ttl_minutes": COOKIE_CACHE_TTL_MINUTES,
         "redis_enabled": REDIS_ENABLED and bool(REDIS_URL),
         "redis_cache_ttl_seconds": REDIS_CACHE_TTL_SECONDS,
+        "api_max_batch_domains": API_MAX_BATCH_DOMAINS,
+        "api_task_timeout_seconds": API_TASK_TIMEOUT_SECONDS,
+        "live_task_limits": get_live_task_stats(),
     }
 
 
@@ -429,16 +608,7 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
     requested_country = normalize_country(request.country)
     task_id = str(uuid.uuid4())
 
-    tasks_storage[task_id] = {
-        "task_id": task_id,
-        "status": "pending",
-        "created_at": datetime.now().isoformat(),
-        "domains": [domain],
-        "country": requested_country,
-        "source": None,
-        "cached_domains": 0,
-        "live_domains": 1,
-    }
+    tasks_storage[task_id] = build_task_record(task_id, [domain], requested_country)
 
     cached_result = get_cached_domain_metrics(domain)
     if cached_result:
@@ -459,7 +629,15 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
         )
 
     if not request.async_mode:
-        process_query_task(task_id, [domain], requested_country)
+        if not run_live_task_now(task_id, [domain], requested_country):
+            tasks_storage.pop(task_id, None)
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Live query workers are busy. Retry later or call "
+                    "/api/query with async_mode=true."
+                ),
+            )
         task = tasks_storage[task_id]
         if task["status"] == "failed":
             raise HTTPException(status_code=502, detail=task.get("error", "Query failed"))
@@ -474,12 +652,11 @@ async def query_domain(request: QueryRequest, background_tasks: BackgroundTasks)
             live_domains=task.get("live_domains", 0),
         )
 
-    background_tasks.add_task(
-        process_query_task,
-        task_id,
-        [domain],
-        requested_country,
-    )
+    try:
+        enqueue_live_task(task_id, [domain], requested_country)
+    except HTTPException:
+        tasks_storage.pop(task_id, None)
+        raise
 
     return TaskResponse(
         task_id=task_id,
@@ -498,19 +675,19 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
         normalized_domain = normalize_domain(domain)
         if normalized_domain:
             domains.append(normalized_domain)
+    if not domains:
+        raise HTTPException(status_code=400, detail="At least one valid domain is required")
+    if len(domains) > API_MAX_BATCH_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Batch query supports at most {API_MAX_BATCH_DOMAINS} domains per request"
+            ),
+        )
     requested_country = normalize_country(request.country)
     task_id = str(uuid.uuid4())
 
-    tasks_storage[task_id] = {
-        "task_id": task_id,
-        "status": "pending",
-        "created_at": datetime.now().isoformat(),
-        "domains": domains,
-        "country": requested_country,
-        "source": None,
-        "cached_domains": 0,
-        "live_domains": len(domains),
-    }
+    tasks_storage[task_id] = build_task_record(task_id, domains, requested_country)
 
     cached_results: List[Optional[dict]] = []
     all_cached = True
@@ -543,12 +720,11 @@ async def batch_query(request: BatchQueryRequest, background_tasks: BackgroundTa
     tasks_storage[task_id]["live_domains"] = live_domains
     tasks_storage[task_id]["source"] = detect_result_source(cached_domains, live_domains)
 
-    background_tasks.add_task(
-        process_query_task,
-        task_id,
-        domains,
-        requested_country,
-    )
+    try:
+        enqueue_live_task(task_id, domains, requested_country)
+    except HTTPException:
+        tasks_storage.pop(task_id, None)
+        raise
 
     return TaskResponse(
         task_id=task_id,
@@ -583,6 +759,7 @@ async def get_result(task_id: str):
 async def list_tasks():
     return {
         "total": len(tasks_storage),
+        "live_task_limits": get_live_task_stats(),
         "tasks": [
             {
                 "task_id": task["task_id"],
